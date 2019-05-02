@@ -1,0 +1,374 @@
+---
+title: "Modelling"
+geometry: margin=2cm
+output:
+  html_document:
+    toc: TRUE
+  pdf_document: default
+editor_options:
+  chunk_output_type: inline
+---
+
+```{r defaults, cache=FALSE, include=FALSE}
+knitr::opts_chunk$set(warning=F)
+set.seed(170819)
+options(width = 120, digits = 3)
+```
+
+```{r libraries-and-settings, include=F}
+#######################################################
+# Load libraries ####
+#######################################################
+packages <- c("corrplot", "foreign", "gridExtra", "knitr", 
+              "lavaan", "plyr", "tidyverse", "magrittr")
+invisible(lapply(packages, library, character.only = TRUE))
+```
+
+This script implements the Specification Curve Analysis (SCA) procedure to model and analyse the cleaned Understanding Society data. _"Briefly, SCA is a tool for mapping the sum of theory-driven analytic decisions that could have been justifiably taken when analysing quantitative data. Researchers demarcate every possible analytical pathway and then calculate the results of each one. Instead of reporting a handful of analyses in their paper, they report all results of all theoretically defensible analyses." (Orben and Przybyslki, 2019)_ It consists of three seperate steps:  
+
+1. Identifying specifications  
+2. Calculating specifications
+3. Significance testing using permutations
+
+In the first step we note down what possible analytical decisions could have been taken when analysing the data. There are six different decisions which we identified that researchers have to take when running a random-intercepts cross lagged panel model on Understanding Society data to link life satisfaction and social media use: how to define life satisfaction, how many waves to analyse, what control variables to include, whether to treat scales as ordinal or not, whether to imputate missing data, and whether to examine different genders or all genders as a whole.   
+
+There are six different domains of life satisfaction that could have been chosen in the analysis (satisfaction with friends, family, life, appearance, school or school work), in addition to taking the mean of the domain scores to create a "mean satisfaction" measure. Furthermore, one could have analysed 3, 4, or 5 waves. We identified 7 control variables that could have been included in any possible combination (or not included at all): Age, maternal depression, maternal employment, number of siblings, family support experienced, time spent socialising with the mother and ethnicity of the mother. We could have modeled using WLSMV (treating variables as ordinal) or MLR estimation techniques. Furthermore, we could have used imputed or original data.  
+
+In the second step we run an algorithm that takes every possible combination of these analytical decisions and analyses the resulting model. The results are put into a data frame which can then be interpreted to examine the general trends in the SCA and what analytical decisions might be important in determining the results of an analysis.  
+
+The third step is not implemented in this paper as the inferential process would have needed highly complicated statistics that were beyond the scope of our work and expertise. 
+
+```{r read-data}
+load("../data/cleaned/data_wide.RData")
+load("../data/cleaned/data_wide_imp.RData")
+```
+
+## Setting up a Specification Curve Analysis
+
+To set up the SCA we need to create our "results frame", which is the data frame which shows us all the possible different combinations of analytical decisions that could have been made. We define the different choices for each analytical milestone, and then take all the possible combinations of them.
+
+```{r results-frame}
+# Define analytical choices
+wellbeing <- c("lifesat", "hsw", "hap", "hfm", "hfr", "hsc", "hlf") #different life satisfaction domains or mean
+variables <- c("netchtpool") # we only have a single social media measure
+gender <- c("Female", "Male", "All") # either analyse females, males or all together
+control <- c("a_y_age", "a_y_famsup", "a_m_employed","a_m_depressed", # our 7 control variables
+             "a_m_nonwhite", "a_m_nkids", "a_m_socialwithkid")  # note that to reduce complexity, we use time-invariant control variables
+estimator <- c("MLR", "WLSMV") # the two different esitmation techniques
+imputation <- c("Original", "Imputated") # missing datai mputation options
+waves <- c(3,4,5) # number of waves analysed
+
+# we do not just add in all controls seperately, but also all of them together. We create this variable here
+c_variables <-
+  (do.call("c", lapply(seq_along(control), function(i)
+    combn(control, i, FUN = list))))
+c_variables <- c(c_variables[1:length(control)],  c_variables[length(c_variables)], "NULL") #add "no control" option
+
+# we now create a results frame with every possible combination of these analytical choices
+results_frame <- expand.grid(wellbeing, variables, gender, waves, c_variables, estimator, imputation)
+names(results_frame) <- c("lifesatisfaction", "variables", "gender", "wav", "cont", "estimator", "imputation")
+
+# we also add columns with all the different kinds of information we want to store about the outcome of each analysis
+results_frame_colnames_coeffs <- c(
+  paste(c(rep("b1", 7), rep("b2", 7), rep("b3", 7), rep("b4", 7), rep("cor1", 7), rep("cor2", 7), rep("cor3", 7)),
+        c(rep(c("est", "est_ll", "est_ul", "std", "std_ll", "std_ul", "pvalue"), 6)), 
+        sep = "_"))
+results_frame_colnames_model <- c("n", "parameter_n", "cfi", "rmsea", "srmr")
+results_frame_colnames <- c(results_frame_colnames_coeffs, results_frame_colnames_model)
+results_frame[, results_frame_colnames] <- NA
+```
+
+In this function (get_model) we make a specific SCA model which is subsequently run on the data. We take the specific choice of lifesatisfaction, social media variable, number of waves and control variables and make the random-intercept cross lagged panel model. This is done by pasting together the various aspects of the model.
+
+```{r SCA-function-1}
+get_model <- function(lifesatisfaction, variables, wav, cont) {
+  # Setup variable names
+    # latent variables: life satisfaction
+      model_1 <- paste0("a_lifesat_la =~ 1*a_", lifesatisfaction, " \n b_lifesat_la =~ 1*b_", lifesatisfaction,
+                      " \n c_lifesat_la =~ 1*c_", lifesatisfaction, " \n d_lifesat_la =~ 1*d_", lifesatisfaction,
+                      " \n e_lifesat_la =~ 1*e_", lifesatisfaction, " \n f_lifesat_la =~ 1*f_", lifesatisfaction)
+      model_1 <- as.vector(strsplit(model_1, "\n"))[[1]]
+      
+    # latent variables: technology use
+      model_2 <- paste0("a_var_la =~ 1 * a_", variables, " \n b_var_la =~ 1 * b_", variables, 
+                        " \n c_var_la =~ 1 * c_", variables, " \n d_var_la =~ 1 * d_", variables, 
+                        " \n e_var_la =~ 1 * e_", variables, " \n f_var_la =~ 1 * f_", variables)
+      model_2 <- as.vector(strsplit(model_2, "\n"))[[1]]
+      
+    # random intercepts
+      model_3 <- paste0("lifesat_ri =~ 1 * a_", lifesatisfaction, " + 1 * b_", lifesatisfaction, 
+                        " + 1 * c_", lifesatisfaction, " + 1 * d_", lifesatisfaction, " + 1 * e_", 
+                        lifesatisfaction, " + 1 * f_", lifesatisfaction)
+      model_4 <- paste0("var_ri =~ 1 * a_", variables, " + 1 * b_", variables, 
+                        " + 1 * c_", variables, " + 1 * d_", variables, " + 1 * e_", 
+                        variables, " + 1 * f_", variables)
+      model_3 <- as.vector(strsplit(model_3, " + ", fixed = TRUE))[[1]]
+      model_4 <- as.vector(strsplit(model_4, " + ", fixed = TRUE))[[1]]
+      
+    # restrict variances of observed variables to 0 (random intercept)
+      model_5 <- paste0("a_", lifesatisfaction, " ~~ 0 * a_", lifesatisfaction, 
+                        " \n b_", lifesatisfaction, "~~ 0 * b_", lifesatisfaction, 
+                        " \n c_", lifesatisfaction, " ~~ 0 * c_", lifesatisfaction, 
+                        " \n d_", lifesatisfaction, " ~~ 0 * d_", lifesatisfaction, 
+                        " \n e_", lifesatisfaction, " ~~ 0 * e_", lifesatisfaction, 
+                        " \n f_", lifesatisfaction, " ~~ 0 * f_", lifesatisfaction)
+      model_6 <- paste0("a_", variables, " ~~ 0 * a_", variables, 
+                        " \n b_", variables, " ~~ 0 * b_", variables, 
+                        " \n c_", variables, " ~~ 0 * c_", variables, 
+                        " \n d_", variables, " ~~ 0 * d_", variables, 
+                        " \n e_", variables, " ~~ 0 * e_", variables, 
+                        " \n f_", variables, " ~~ 0 * f_", variables)
+      model_5 <- as.vector(strsplit(model_5, "\n"))[[1]]
+      model_6 <- as.vector(strsplit(model_6, "\n"))[[1]]
+    
+    # setting latent factor covariance to zero
+      model_7 <- "lifesat_ri ~~ 0 * a_lifesat_la \n lifesat_ri ~~ 0 * b_lifesat_la \n lifesat_ri ~~ 0 * c_lifesat_la \n lifesat_ri ~~ 0 * d_lifesat_la \n lifesat_ri ~~ 0 * e_lifesat_la \n lifesat_ri ~~ 0 * f_lifesat_la"
+      model_8 <- "lifesat_ri ~~ 0 * a_var_la \n lifesat_ri ~~ 0 * b_var_la \n lifesat_ri ~~ 0 * c_var_la \n lifesat_ri ~~ 0 * d_var_la \n lifesat_ri ~~ 0 * e_var_la \n lifesat_ri ~~ 0 * f_var_la"
+      model_9 <- "var_ri ~~ 0 * a_var_la \n var_ri ~~ 0 * b_var_la \n var_ri ~~ 0 * c_var_la \n var_ri ~~ 0 * d_var_la \n var_ri ~~ 0 * e_var_la \n var_ri ~~ 0 * f_var_la"
+      model_10 <- "var_ri ~~ 0 * a_lifesat_la \n var_ri ~~ 0 * b_lifesat_la \n var_ri ~~ 0 * c_lifesat_la \n var_ri ~~ 0 * d_lifesat_la \n var_ri ~~ 0 * e_lifesat_la \n var_ri ~~ 0 * f_lifesat_la"
+      model_7 <- as.vector(strsplit(model_7, "\n"))[[1]]
+      model_8 <- as.vector(strsplit(model_8, "\n"))[[1]]
+      model_9 <- as.vector(strsplit(model_9, "\n"))[[1]]
+      model_10 <- as.vector(strsplit(model_10, "\n"))[[1]]
+      
+    # allow covariances
+      model_11 <- "lifesat_ri ~~ cor1*var_ri \n"
+      model_12 <- "a_lifesat_la ~~ cor2*a_var_la \n b_lifesat_la ~~ cor3*b_var_la \n c_lifesat_la ~~ cor3*c_var_la \n d_lifesat_la ~~ cor3*d_var_la \n e_lifesat_la ~~ cor3*e_var_la \n f_lifesat_la ~~ cor3*f_var_la"
+      model_12 <- as.vector(strsplit(model_12, "\n"))[[1]]
+      
+    # cross-lagged paths
+      model_13 <- "b_lifesat_la ~ b4 * a_lifesat_la + b2 * a_var_la \n c_lifesat_la ~ b4 * b_lifesat_la + b2 * b_var_la \n d_lifesat_la ~ b4 * c_lifesat_la + b2 * c_var_la \n e_lifesat_la ~ b4 * d_lifesat_la + b2 * d_var_la \n f_lifesat_la ~ b4 * e_lifesat_la + b2 * e_var_la"
+      model_14 <- "b_var_la ~ b3 * a_lifesat_la + b1 * a_var_la \n c_var_la ~ b3 * b_lifesat_la + b1 * b_var_la \n d_var_la ~ b3 * c_lifesat_la + b1 * c_var_la \n e_var_la ~ b3 * d_lifesat_la + b1 * d_var_la \n f_var_la ~ b3 * e_lifesat_la + b1 * e_var_la"
+      model_13 <- as.vector(strsplit(model_13, "\n"))[[1]]
+      model_14 <- as.vector(strsplit(model_14, "\n"))[[1]]
+      
+    # control variables
+      if(cont == "NULL"){
+        model_15 <- ""
+        model_16 <- ""
+      } else {
+        control <- cont[[1]]
+      model_15 <- paste0("a_", lifesatisfaction, " ~ ", control[1], " + ", control[2], " + ", control[3], " + ", control[4], " + ", control[5], " + ", control[6], " + ", control[7], 
+                         " \n b_", lifesatisfaction, " ~ ", control[1], " + ", control[2], " + ", control[3], " + ", control[4], " + ", control[5], " + ", control[6], " + ", control[7], 
+                         " \n c_", lifesatisfaction, " ~ ", control[1], " + ", control[2], " + ", control[3], " + ", control[4], " + ", control[5], " + ", control[6], " + ", control[7], 
+                         " \n d_", lifesatisfaction, " ~ ", control[1], " + ", control[2], " + ", control[3], " + ", control[4], " + ", control[5], " + ", control[6], " + ", control[7], 
+                         " \n e_", lifesatisfaction, " ~ ", control[1], " + ", control[2], " + ", control[3], " + ", control[4], " + ", control[5], " + ", control[6], " + ", control[7], 
+                         " \n f_", lifesatisfaction, " ~ ", control[1], " + ", control[2], " + ", control[3], " + ", control[4], " + ", control[5], " + ", control[6], " + ", control[7], " \n ")
+      model_16 <- paste0("a_", variables, " ~ ", control[1], " + ", control[2], " + ", control[3], " + ", control[4], " + ", control[5], " + ", control[6], " + ", control[7], 
+                         " \n b_", variables, " ~ ", control[1], " + ", control[2], " + ", control[3], " + ", control[4], " + ", control[5], " + ", control[6], " + ", control[7], 
+                         " \n c_", variables, " ~ ", control[1], " + ", control[2], " + ", control[3], " + ", control[4], " + ", control[5], " + ", control[6], " + ", control[7], 
+                         " \n d_", variables, " ~ ", control[1], " + ", control[2], " + ", control[3], " + ", control[4], " + ", control[5], " + ", control[6], " + ", control[7], 
+                         " \n e_", variables, " ~ ", control[1], " + ", control[2], " + ", control[3], " + ", control[4], " + ", control[5], " + ", control[6], " + ", control[7], 
+                         " \n f_", variables, " ~ ", control[1], " + ", control[2], " + ", control[3], " + ", control[4], " + ", control[5], " + ", control[6], " + ", control[7])
+      model_15 <- str_replace_all(model_15, pattern = fixed(" + NULL"), "") #delete NULL
+      model_16 <- str_replace_all(model_16, pattern = fixed(" + NULL"), "")
+      model_15 <- as.vector(strsplit(model_15, "\n"))[[1]]
+      model_16 <- as.vector(strsplit(model_16, "\n"))[[1]]
+      }
+      
+    if (wav == 2){
+      model_1 <- paste0(model_1[1], "\n", model_1[2], " \n")
+      model_2 <- paste0(model_2[1], "\n", model_2[2], " \n")
+      model_3 <- paste0(model_3[1], " + ", model_3[2]," \n")
+      model_4 <- paste0(model_4[1], " + ", model_4[2], " \n")
+      model_5 <- paste0(model_5[1], "\n", model_5[2], " \n")
+      model_6 <- paste0(model_6[1], "\n", model_6[2], " \n")
+      model_7 <- paste0(model_7[1], "\n", model_7[2], " \n")
+      model_8 <- paste0(model_8[1], "\n", model_8[2], " \n")
+      model_9 <- paste0(model_9[1], "\n", model_9[2], " \n")
+      model_10 <- paste0(model_10[1], "\n", model_10[2], " \n")
+      model_12 <- paste0(model_12[1], "\n", model_12[2], " \n")
+      model_13 <- paste0(model_13[1], " \n")
+      model_14 <- paste0(model_14[1], " \n")
+      model_15 <- paste0(model_15[1], "\n", model_15[2], " \n")
+      model_16 <- paste0(model_16[1], "\n", model_16[2], " \n")
+    } else if (wav == 3){
+      model_1 <- paste0(model_1[1], "\n", model_1[2], "\n", model_1[3], " \n")
+      model_2 <- paste0(model_2[1], "\n", model_2[2], "\n", model_2[3], " \n")
+      model_3 <- paste0(model_3[1], " + ", model_3[2], " + ", model_3[3], " \n")
+      model_4 <- paste0(model_4[1], " + ", model_4[2], " + ", model_4[3], " \n")
+      model_5 <- paste0(model_5[1], "\n", model_5[2], "\n", model_5[3], " \n")
+      model_6 <- paste0(model_6[1], "\n", model_6[2], "\n", model_6[3], " \n")
+      model_7 <- paste0(model_7[1], "\n", model_7[2], "\n", model_7[3], " \n")
+      model_8 <- paste0(model_8[1], "\n", model_8[2], "\n", model_8[3], " \n")
+      model_9 <- paste0(model_9[1], "\n", model_9[2], "\n", model_9[3], " \n")
+      model_10 <- paste0(model_10[1], "\n", model_10[2], "\n", model_10[3], " \n")
+      model_12 <- paste0(model_12[1], "\n", model_12[2], "\n", model_12[3], " \n")
+      model_13 <- paste0(model_13[1], "\n", model_13[2], " \n")
+      model_14 <- paste0(model_14[1], "\n", model_14[2], " \n")
+      model_15 <- paste0(model_15[1], "\n", model_15[2], "\n", model_15[3], " \n")
+      model_16 <- paste0(model_16[1], "\n", model_16[2], "\n", model_16[3], " \n")
+    } else if (wav == 4){
+      model_1 <- paste0(model_1[1], "\n", model_1[2], "\n", model_1[3], "\n", model_1[4], " \n")
+      model_2 <- paste0(model_2[1], "\n", model_2[2], "\n", model_2[3], "\n", model_2[4], " \n")
+      model_3 <- paste0(model_3[1], " + ", model_3[2], " + ", model_3[3], " + ", model_3[4], " \n")
+      model_4 <- paste0(model_4[1], " + ", model_4[2], " + ", model_4[3], " + ", model_4[4], " \n")
+      model_5 <- paste0(model_5[1], "\n", model_5[2], "\n", model_5[3], "\n", model_5[4], " \n")
+      model_6 <- paste0(model_6[1], "\n", model_6[2], "\n", model_6[3], "\n", model_6[4], " \n")
+      model_7 <- paste0(model_7[1], "\n", model_7[2], "\n", model_7[3], "\n", model_7[4], " \n")
+      model_8 <- paste0(model_8[1], "\n", model_8[2], "\n", model_8[3], "\n", model_8[4], " \n")
+      model_9 <- paste0(model_9[1], "\n", model_9[2], "\n", model_9[3], "\n", model_9[4], " \n")
+      model_10 <- paste0(model_10[1], "\n", model_10[2], "\n", model_10[3], "\n", model_10[4], " \n")
+      model_12 <- paste0(model_12[1], "\n", model_12[2], "\n", model_12[3], "\n", model_12[4], " \n")
+      model_13 <- paste0(model_13[1], "\n", model_13[2], "\n", model_13[3], " \n")
+      model_14 <- paste0(model_14[1], "\n", model_14[2], "\n", model_14[3], " \n")
+      model_15 <- paste0(model_15[1], "\n", model_15[2], "\n", model_15[3], "\n", model_15[4], " \n")
+      model_16 <- paste0(model_16[1], "\n", model_16[2], "\n", model_16[3], "\n", model_16[4], " \n")
+    } else if (wav == 5){
+      model_1 <- paste0(model_1[1], "\n", model_1[2], "\n", model_1[3], "\n", model_1[4], 
+                        "\n", model_1[5], " \n")
+      model_2 <- paste0(model_2[1], "\n", model_2[2], "\n", model_2[3], "\n", model_2[4], 
+                        "\n", model_2[5], " \n")
+      model_3 <- paste0(model_3[1], " + ", model_3[2], " + ", model_3[3], " + ", model_3[4], 
+                        " + ", model_3[5], " \n")
+      model_4 <- paste0(model_4[1], " + ", model_4[2], " + ", model_4[3], " + ", model_4[4], 
+                        " + ", model_4[5], " \n")
+      model_5 <- paste0(model_5[1], "\n", model_5[2], "\n", model_5[3], "\n", model_5[4], 
+                        "\n", model_5[5], " \n")
+      model_6 <- paste0(model_6[1], "\n", model_6[2], "\n", model_6[3], "\n", model_6[4], 
+                        "\n", model_6[5], " \n")
+      model_7 <- paste0(model_7[1], "\n", model_7[2], "\n", model_7[3], "\n", model_7[4], 
+                        "\n", model_7[5], " \n")
+      model_8 <- paste0(model_8[1], "\n", model_8[2], "\n", model_8[3], "\n", model_8[4], 
+                        "\n", model_8[5], " \n")
+      model_9 <- paste0(model_9[1], "\n", model_9[2], "\n", model_9[3], "\n", model_9[4], 
+                        "\n", model_9[5], " \n")
+      model_10 <- paste0(model_10[1], "\n", model_10[2], "\n", model_10[3], "\n", model_10[4], 
+                        "\n", model_10[5], " \n")
+      model_12 <- paste0(model_12[1], "\n", model_12[2], "\n", model_12[3], "\n", model_12[4], 
+                        "\n", model_12[5], " \n")
+      model_13 <- paste0(model_13[1], "\n", model_13[2], "\n", model_13[3], "\n", model_13[4], " \n")
+      model_14 <- paste0(model_14[1], "\n", model_14[2], "\n", model_14[3], "\n", model_14[4], " \n")
+      model_15 <- paste0(model_15[1], "\n", model_15[2], "\n", model_15[3], "\n", model_15[4], 
+                        "\n", model_15[5], " \n")
+      model_16 <- paste0(model_16[1], "\n", model_16[2], "\n", model_16[3], "\n", model_16[4], 
+                        "\n", model_16[5], " \n")
+    } else if (wav == 6){
+      model_1 <- paste0(model_1[1], "\n", model_1[2], "\n", model_1[3], "\n", model_1[4], 
+                        "\n", model_1[5], "\n", model_1[6], " \n")
+      model_2 <- paste0(model_2[1], "\n", model_2[2], "\n", model_2[3], "\n", model_2[4], 
+                        "\n", model_2[5], "\n", model_2[6], " \n")
+      model_3 <- paste0(model_3[1], " + ", model_3[2], " + ", model_3[3], " + ", model_3[4], 
+                        " + ", model_3[5], " + ", model_3[6], " \n")
+      model_4 <- paste0(model_4[1], " + ", model_4[2], " + ", model_4[3], " + ", model_4[4], 
+                        " + ", model_4[5], " + ", model_4[6], " \n")
+      model_5 <- paste0(model_5[1], "\n", model_5[2], "\n", model_5[3], "\n", model_5[4], 
+                        "\n", model_5[5], "\n", model_5[6], " \n")
+      model_6 <- paste0(model_6[1], "\n", model_6[2], "\n", model_6[3], "\n", model_6[4], 
+                        "\n", model_6[5], "\n", model_6[6], " \n")
+      model_7 <- paste0(model_7[1], "\n", model_7[2], "\n", model_7[3], "\n", model_7[4], 
+                        "\n", model_7[5], "\n", model_7[6], " \n")
+      model_8 <- paste0(model_8[1], "\n", model_8[2], "\n", model_8[3], "\n", model_8[4], 
+                        "\n", model_8[5], "\n", model_8[6], " \n")
+      model_9 <- paste0(model_9[1], "\n", model_9[2], "\n", model_9[3], "\n", model_9[4], 
+                        "\n", model_9[5], "\n", model_9[6], " \n")
+      model_10 <- paste0(model_10[1], "\n", model_10[2], "\n", model_10[3], "\n", model_10[4], 
+                        "\n", model_10[5], "\n", model_10[6], " \n")
+      model_12 <- paste0(model_12[1], "\n", model_12[2], "\n", model_12[3], "\n", model_12[4], 
+                        "\n", model_12[5], "\n", model_12[6], " \n")
+      model_13 <- paste0(model_13[1], "\n", model_13[2], "\n", model_13[3], "\n", model_13[4], 
+                        "\n", model_13[5], " \n")
+      model_14 <- paste0(model_14[1], "\n", model_14[2], "\n", model_14[3], "\n", model_14[4], 
+                        "\n", model_14[5], " \n")
+      model_15 <- paste0(model_15[1], "\n", model_15[2], "\n", model_15[3], "\n", model_15[4], 
+                        "\n", model_15[5], "\n", model_15[6], " \n")
+      model_16 <- paste0(model_16[1], "\n", model_16[2], "\n", model_16[3], "\n", model_16[4], 
+                        "\n", model_16[5], "\n", model_16[6], " \n")
+    }
+  
+        if(cont == "NULL"){
+      model <- paste(model_1, model_2, model_3, model_4, 
+                     model_5, model_6, model_7, model_8, 
+                     model_9, model_10, model_11, model_12, 
+                     model_13, model_14, sep = " ")
+      } else {
+      model <- paste(model_1, model_2, model_3, model_4, 
+                     model_5, model_6, model_7, model_8, 
+                     model_9, model_10, model_11, model_12, 
+                     model_13, model_14, model_15, model_16, sep = " ")
+      }
+      
+      model <- gsub("(.) NA", " ", model)
+      
+  return(model)
+}
+```
+
+Once the model is made, we want to run it on the dataset chosen by the specific SCA specification we are currently analysing. This is done using the get_fit function which runs the appropriate model (which depends on the choice of estimator) on the appropriate dataset (which depends on the choice of gender and data imputation).
+
+```{r get fit function}
+get_fit <- function(model, wav, imp, estimators, gender) {
+  if(imp == "Original"){
+    data_set <- data_wide 
+  } else {
+    data_set <- data_wide_imp
+  }
+  
+  if(gender == "Female"){
+    data_set %<>% filter(a_y_male == 0)
+  } else if (gender == "Male") {
+    data_set %<>% filter(a_y_male == 1)
+  } else {}
+  
+  fit <- sem(model, filter(data_set, waves > (wav-1)), 
+                  estimator = estimators, 
+                  meanstructure = "default")
+  return(fit)
+}
+```
+
+Having run the model we then want to extract the variables of interest from it. The get_coef function does this job. The variables extracted include the standardised and unstandardised estimates of the different paths, the p value, the upper and lower CIs, the number of participants, the number of parameters, and the cfi, rmsea and srmr (fit measures).
+
+```{r get coef function}
+get_coef <- function(fit) {
+  parmest <- parameterEstimates(fit, standardized = TRUE) %>% 
+    select(lhs, op, rhs, label, est, est_ll = ci.lower, est_ul = ci.upper, pvalue)
+  standsol <- standardizedsolution(fit) %>% 
+    select(lhs, op, rhs, std = est.std, std_ll = ci.lower, std_ul = ci.upper)
+  estimates <- left_join(parmest, standsol, by = c("lhs", "op", "rhs"))
+  
+  labels <- c("b1", "b2", "b3", "b4", "cor1", "cor2", "cor3")
+  
+  for(i in 1:length(labels)){
+    temp_data <- estimates %>% filter(label == labels[i])
+    values <- temp_data[1, c("est", "est_ll", "est_ul", "std", "std_ll", "std_ul", "pvalue")]
+    colnames(values) <- paste(labels[i], colnames(values), sep = "_")
+    assign(paste("values", i, sep="_"), values)  # create new object with results from one coeff
+  }
+  
+  values <- cbind(values_1, values_2, values_3, values_4, values_5, values_6, values_7)  # rhs needs to equal length(labels)
+  values$n <- nobs(fit)
+  values$parameter_n <- inspect(fit, "ntotal") / inspect(fit, "npar")
+  values[, c("cfi", "rmsea", "srmr")] <- fitmeasures(fit, fit.measures = c("CFI", "RMSEA", "SRMR"))
+  
+  return(values)
+}
+```
+
+Lastly, having made the three functions to define the models, run them and extract the variables of interest from them, we run this algorithm on the results frame created at the beginning of the script. Every row is a different specification (unique combination of analytical decisions) and the code goes through each row separately, extracts the analytical decisions specified (the "specification"), builds the model, analyses it and extract the results to insert into that row of the results frame.
+
+```{r Run-SCAs, eval = F}
+###############################
+# Run SCAs
+###############################
+for (i in 1:nrow(results_frame)) {
+  if((i/50)%%1 == 0){
+    print(i)
+  } else {}
+  #print(i/nrow(results_frame))
+  tryCatch({
+    results_frame[i, results_frame_colnames] <- get_coef(
+                    get_fit(
+                      get_model(
+                        results_frame$lifesatisfaction[i], results_frame$variables[i], results_frame$wav[i], results_frame$cont[i]
+                        ), 
+                      results_frame$wav[i], results_frame$imputation[i], as.character(results_frame$estimator[i]), results_frame$gender[i])
+                    )
+  }, error = function(e){cat("ERROR :",conditionMessage(e), "\n")})
+  
+}
+```
+
+```{r save, include=F, eval = FALSE}
+saveRDS(results_frame, "../data/objects/sca.RData")
+```

@@ -1,0 +1,689 @@
+---
+title: "Data-Wrangling"
+output:
+  html_document:
+    toc: TRUE
+editor_options:
+  chunk_output_type: inline
+---
+
+```{r defaults, cache=FALSE, include=FALSE}
+knitr::opts_chunk$set(warning=F)
+set.seed(170819)
+options(width = 120, digits = 3)
+```
+
+This project examines whether social media use affects adolescents over time using Understanding Society data. The Understanding Society dataset is an annual longitudinal study of 40,000 UK households. The data collection takes place over a 24 month period, so the waves overlap. The study is run by the Institute for Social and Economic Research at the University of Essex; it began in 2009 and has been going ever since. It might be of interest to some that it is the successor to the British Household Panel Survey. 
+
+The dataset can be accessed via the UK Data Service after filling in a usage agreement: beta.ukdataservice.ac.uk/datacatalogue/series/series?id=2000053
+
+We dont work with the whole dataset but with a special subsample of 10-15 year olds, which are a member of a household interviewed as part of Understanding Society. Adolescent members of the households are interviewed and re-interviewed every year till they graduate into the adult questionnaire. The data is available in SPSS, Stata and ASCII formats. We use SPSS for import and name each wave by the time when it was first collected. For example, wave 1 was developed in 2008, collected in 2009 and 2010 and processed in 2011 - we will call this wave the 2009 wave. 
+
+This first markdown file implements the data importing, cleaning and wrangling necessary for the analyses to proceed. In total we load 8 waves of the data as released in Spring 2019 (2009-2017). 
+
+## Load Adolescent Data, Simple Cleaning and Formatting Steps
+
+```{r libraries-and-settings, include = F}
+# Load libraries
+packages <- c("corrplot", "foreign", "gridExtra", "knitr", 
+              "lavaan", "mice", "plyr", "tidyverse", "magrittr")
+invisible(lapply(packages, library, character.only = TRUE))
+rm(packages)
+
+# Specify the number of waves you want to load 
+waves <- 8
+
+# Set seed to ensure randomisation
+set.seed(170819)
+```
+
+```{r load-individual-datasets}
+# Load individual youth dataset from 'idata' folder which is placed (as when downloaded from the UK data service) in /data/raw/us_w/
+# This creates 8 datasets "idata_1, idata_2, ..., idata_8"
+for (i in 1:waves){
+assign(paste("idata", i, sep = "_"), 
+       read.spss(paste0(paste0("../data/raw/us_w", i, "/"), letters[i],"_youth.sav"), 
+                 use.value.labels = FALSE, to.data.frame = TRUE, use.missings = TRUE)
+       )
+}
+```
+
+```{r function-clean-data}
+####################################################################################################################################################
+# Function: clean_data
+# Inpout: an idata_x file
+# Method: this function cleans the data, it defines NAs (any negative numbers), it removes the yp from the beginning of variable names, and
+#         it also selects those variables of interest for further analyses.
+#         This is important because the datasets are very large and difficult to handle in full 
+# Output: smaller data file 
+####################################################################################################################################################
+
+clean_data <- function(dataset){
+  is.na(dataset[, ]) <- dataset[, ] < 0 #define NAs
+
+  dataset %<>% 
+    select(-ends_with("_sex")) %>%
+    rename_all(~str_replace(., "yp", "")) %>% 
+    select(
+      contains("pidp"), #participant ID
+      contains("dvage"), #participant age
+      contains("sex"), #participant sex
+      ends_with("mnpid"), #mother id
+      ends_with("socweb"), 
+      ends_with("famsup"), 
+      ends_with("netcht"), 
+      ends_with("tvvidhrs"), 
+      ends_with("tvvidhrw"), 
+      ends_with("comp"), 
+      ends_with("pchw"),
+      ends_with("cintnt"),
+      ends_with("cpgs"),
+      ends_with("consol"),
+      ends_with("constm"),
+      ends_with("mulpgms"),
+      ends_with("mobu"),
+      ends_with("hsw"),
+      ends_with("hap"),
+      ends_with("hfm"),
+      ends_with("hfr"),
+      ends_with("hsc"),
+      ends_with("hlf"),
+      contains("est"),
+      contains("sdq"),
+      contains("npal"),
+      contains("eatlivu"),
+      contains("dklm"),
+      contains("regalco"),
+      contains("evralc"),
+      contains("evrsmo"),
+      contains("smofrq"),
+      ends_with("late"),
+      ends_with("acvwell"),
+      ends_with("truant"),
+      -ends_with("_dv")
+  )
+  return(dataset)
+}
+
+# apply function to all seven datasets
+data_1 <- clean_data(idata_1)
+data_2 <- clean_data(idata_2)
+data_3 <- clean_data(idata_3)
+data_4 <- clean_data(idata_4)
+data_5 <- clean_data(idata_5)
+data_6 <- clean_data(idata_6)
+data_7 <- clean_data(idata_7)
+data_8 <- clean_data(idata_8)
+
+# We will now remove idata files from the workspace as they are not needed anymore
+rm(list = c("idata_1", "idata_2", "idata_3", "idata_4", "idata_5", "idata_6", "idata_7", "idata_8"))
+```
+
+We first need to create the datasets we will then analyse. Because it is easier to data wrangle with a long format dataset, we convert the dataset into long format. We will convert the data to wide format later in the script. To do this we first remove the year on year indicators in front of each variable and then merge the datasets.
+
+```{r make-long-dataset}
+# make long dataset
+names(data_1) <- str_replace(names(data_1), "a_", "") #remove year indicator
+data_1$year <- rep("2009", nrow(data_1)) #make index of year
+names(data_2) <- str_replace(names(data_2), "b_", "")
+data_2$year <- rep("2010", nrow(data_2))
+names(data_3) <- str_replace(names(data_3), "c_", "")
+data_3$year <- rep("2011", nrow(data_3))
+names(data_4) <- str_replace(names(data_4), "d_", "")
+data_4$year <- rep("2012", nrow(data_4))
+names(data_5) <- str_replace(names(data_5), "e_", "")
+data_5$year <- rep("2013", nrow(data_5))
+names(data_6) <- str_replace(names(data_6), "f_", "")
+data_6$year <- rep("2014", nrow(data_6))
+names(data_7) <- str_replace(names(data_7), "g_", "")
+data_7$year <- rep("2015", nrow(data_7))
+names(data_8) <- str_replace(names(data_8), "h_", "")
+data_8$year <- rep("2016", nrow(data_8))
+
+data_long <- dplyr::bind_rows(data_1, data_2, data_3, data_4, data_5, data_6, data_7, data_8)
+data_long$year <- as.factor(data_long$year)
+
+# remove single datasets
+rm(list = c("data_1", "data_2", "data_3", "data_4", "data_5", "data_6", "data_7", "data_8"))
+```
+
+## Load Mother and Household Data, Simple Cleaning and Formatting Steps
+
+While we have now loaded the adolescents data, we will also load data collected from the mother and the household, which will be used to extract some important control variables later on. Because the datasets are so large, we have split the import and cleaning into smaller parts, so that R's memory does not get busted. 
+
+```{r cleaning-function-mother}
+####################################################################################################################################################
+# Function: clean_data (second version, now for the mother)
+# Input: an mdata_x file
+# Method: this function cleans the  mothersdata, it defines NAs (any negative numbers) and
+#         it also selects those variables of interest for further analyses.
+#         This is important because the datasets are very large and difficult to handle in full 
+# Output: smaller data file 
+####################################################################################################################################################
+
+clean_data <- function(dataset){
+  is.na(dataset[, ]) <- dataset[, ] < 0 #define NAs
+  
+dataset %<>% 
+  select(
+    contains("pidp"),
+    contains("hidp"),
+    ends_with("racel"), 
+    ends_with("qfhigh"),
+    ends_with("sf6a"),
+    ends_with("sf6b"),
+    ends_with("sf6c"),
+    ends_with("socialkid"),
+    ends_with("employ"),
+    ends_with("prearn")
+    )
+}
+```
+
+```{r import-mother-data}
+# load first two datasets, not all of them as that would bust R memory
+for (i in 1:2){
+assign(paste("mdata", i, sep = "_"), 
+       read.spss(paste0(paste0("../data/raw/us_w", i, "/"), letters[i],"_indresp.sav"),
+                 use.value.labels = FALSE,
+                 to.data.frame = TRUE,
+                 use.missings = TRUE))
+}
+
+
+# apply function to first two datasets
+data_1 <- clean_data(mdata_1)
+rm(mdata_1)
+data_2 <- clean_data(mdata_2)
+rm(mdata_2)
+
+# next two datasets!
+for (i in 3:4){
+assign(paste("mdata", i, sep = "_"), 
+       read.spss(paste0(paste0("../data/raw/us_w", i, "/"), letters[i],"_indresp.sav"),
+                 use.value.labels = FALSE,
+                 to.data.frame = TRUE,
+                 use.missings = TRUE))
+}
+data_3 <- clean_data(mdata_3)
+rm(mdata_3)
+data_4 <- clean_data(mdata_4)
+rm(mdata_4)
+
+# another two datasets!
+for (i in 5:6){
+assign(paste("mdata", i, sep = "_"), 
+       read.spss(paste0(paste0("../data/raw/us_w", i, "/"), letters[i],"_indresp.sav"),
+                 use.value.labels = FALSE,
+                 to.data.frame = TRUE,
+                 use.missings = TRUE))
+}
+data_5 <- clean_data(mdata_5)
+rm(mdata_5)
+data_6 <- clean_data(mdata_6)
+rm(mdata_6)
+
+for (i in 7:8){
+assign(paste("mdata", i, sep = "_"), 
+       read.spss(paste0(paste0("../data/raw/us_w", i, "/"), letters[i],"_indresp.sav"),
+                 use.value.labels = FALSE,
+                 to.data.frame = TRUE,
+                 use.missings = TRUE))
+}
+data_7 <- clean_data(mdata_7)
+rm(mdata_7)
+data_8 <- clean_data(mdata_8)
+rm(mdata_8)
+```
+
+```{r cleaning-function-household}
+####################################################################################################################################################
+# Function: clean_data (third version, now for the household)
+# Inpout: an hdata_x file
+# Method: this function cleans the  household data, it defines NAs (any negative numbers) and
+#         it also selects those variables of interest for further analyses.
+#         This is important because the datasets are very large and difficult to handle in full 
+# Output: smaller hdata file 
+####################################################################################################################################################
+
+clean_data <- function(dataset){
+  is.na(dataset[, ]) <- dataset[, ] < 0 #define NAs
+  
+dataset %<>% 
+  select(
+    contains("pidp"),
+    contains("hidp"),
+    ends_with("fihhmnnet1_dv"),
+    ends_with("nkids_dv"),
+    ends_with("respf16"))
+}
+```
+
+```{r clean-household-level-datasets}
+# we now also load and clean the household level datasets
+for (i in 1:waves){
+assign(paste("hdata", i, sep = "_"), 
+       read.spss(paste0(paste0("../data/raw/us_w", i, "/"), letters[i],"_hhresp.sav"),
+                 use.value.labels = FALSE,
+                 to.data.frame = TRUE,
+                 use.missings = TRUE))
+}
+
+hdata_1 <- clean_data(hdata_1)
+hdata_2 <- clean_data(hdata_2)
+hdata_3 <- clean_data(hdata_3)
+hdata_4 <- clean_data(hdata_4)
+hdata_5 <- clean_data(hdata_5)
+hdata_6 <- clean_data(hdata_6)
+hdata_7 <- clean_data(hdata_7)
+hdata_8 <- clean_data(hdata_8)
+
+rm(clean_data)
+```
+
+```{r control-datasets-3}
+# We join the mothers datasets and household level datasets together via the household identifier "hidp"
+data_1 <- left_join(data_1, hdata_1, by = "a_hidp")
+data_2 <- left_join(data_2, hdata_2, by = "b_hidp")
+data_3 <- left_join(data_3, hdata_3, by = "c_hidp")
+data_4 <- left_join(data_4, hdata_4, by = "d_hidp")
+data_5 <- left_join(data_5, hdata_5, by = "e_hidp")
+data_6 <- left_join(data_6, hdata_6, by = "f_hidp")
+data_7 <- left_join(data_7, hdata_7, by = "g_hidp")
+data_8 <- left_join(data_8, hdata_8, by = "h_hidp")
+
+rm(hdata_1, hdata_2, hdata_3, hdata_4, hdata_5, hdata_6, hdata_7, hdata_8)
+```
+
+```{r make-long-dataset-mother}
+# Like with the youth dataset above, we now convert the mother/household dataset into the long format as it is easier to work with going forward. 
+names(data_1) <- str_replace(names(data_1), "a_", "") #remove year indicator
+names(data_1) <- str_replace(names(data_1), "sf6", "scsf6")
+data_1$year <- rep("2009", nrow(data_1)) #make index of years
+names(data_2) <- str_replace(names(data_2), "b_", "")
+data_2$year <- rep("2010", nrow(data_2))
+names(data_3) <- str_replace(names(data_3), "c_", "")
+data_3$year <- rep("2011", nrow(data_3))
+names(data_4) <- str_replace(names(data_4), "d_", "")
+data_4$year <- rep("2012", nrow(data_4))
+names(data_5) <- str_replace(names(data_5), "e_", "")
+data_5$year <- rep("2013", nrow(data_5))
+names(data_6) <- str_replace(names(data_6), "f_", "")
+data_6$year <- rep("2014", nrow(data_6))
+names(data_7) <- str_replace(names(data_7), "g_", "")
+data_7$year <- rep("2015", nrow(data_7))
+names(data_8) <- str_replace(names(data_8), "h_", "")
+data_8$year <- rep("2016", nrow(data_8))
+
+data_long_mother <- dplyr::bind_rows(data_1, data_2, data_3, data_4, data_5, data_6, data_7, data_8)
+data_long_mother$year <- as.factor(data_long_mother$year)
+rm(data_1, data_2, data_3, data_4, data_5, data_6, data_7, data_8)
+```
+
+```{r rename-data}
+# we need to rename the identifiers so that they dont get wrongly combined with the youth identifiers when we merge the two datasets
+names(data_long_mother)[names(data_long_mother) == "pidp"] <- 'mnpid'
+```
+
+Mothers were only asked once about their ethnicity, we therefore need to copy-paste their named ethnicity into each of the subsequent waves. Some mothers fill out the ethnicity questionnaires multiple times, so we only take the first instance.
+
+```{r mother ethnicity}
+mother_ethnicity <- data_long_mother %>% 
+  select(mnpid, racel) %>% 
+  na.omit()
+mother_ethnicity <- mother_ethnicity[!duplicated(mother_ethnicity$mnpid),] 
+data_long_mother_select <- data_long_mother %>% 
+  select(-racel)
+data_long_mother <- dplyr::left_join(data_long_mother_select, mother_ethnicity, by = "mnpid")
+
+rm(mother_ethnicity)
+rm(data_long_mother_select)
+```
+
+## Merge Dataset
+
+Having imported, cleaned and wrangled the youth, mother and household datasets into long format, we can now combine them into one dataset used further in the analyses
+
+```{r controls-data}
+# combine the datasets matching the participant ids and the year
+data_long <- left_join(data_long, data_long_mother, by = c("mnpid", "year"))
+rm(data_long_mother)
+```
+
+## Recoding of variables
+
+Now that we have the whole dataset merged and cleaned, and in a handy long format, we can start looking at our variables of interest. Here is a list of the variables we are using in our study and the measure details.  
+
+* social media use  
+    + netcht, "How many hours do you spend chatting or interacting with friends through a social web-site or app like that on a normal school day?", 1 = None, 2 = Less than an hour, 3 = 1-3 hours, 4 = 4-6 hours, 5 = 7 or more hours  
+    + socweb, "Do you have a social media profile or account on any sides or apps?", 1 = Yes, 2 = No  
+* life satisfaction: "The faces express various types of feelings. Below each face is a number where '1' is completely happy and '7' is not at all happy. Please put an "x" in the box which comes closet to expressing how you feel about each of the following things... ". The scale includes 7 smiley faces going from very happy (1) to very unhappy (7).   
+    + hsw, "your school work?"  
+    + hap, "your appearance?"  
+    + hfm, "your family?"  
+    + hfr, "your friends?"  
+    + hsc, "the school you go to?"  
+    + hlf, "Which best describes how you feel about your life as a whole?"  
+* contextual variables: chosen because these variables were also asked in every wave of the dataset  
+    + smoke, a) "smofrq", "Please read that statements below and tick the box beside the statement that describes you best:", 1 = "I have smoked only once or twice", 2 = "I used to smoke but I dont know", 3 = "I sometimes smoke, but not every week", 4 = "I usually smoke between one and six cigarettes a week", 5 = "I usually smoke more than six cigarettes a week" // b) "evrsmo", "Do you ever smoke cigarettes at all? Please do not include electronic cigarettes (e-cigarettes)." 1 = Yes, 2 = No  
+    + friends, "npal", "How many close friends do you have - friends you could talk to if you were in some kind of trouble?", Write in a number (child free to fill in how they want)  
+    + familyeat, "eatlivu", "In the past 7 days, how many times have you eaten an evening meal together with the rest of your family who live with you?", 1 = "None", 2 = "1 or 2 times", 3 = "3-5 times", 4 = "6-7 times"  
+    + alcohol, a) "dklm", "How many times in the last four weeks have you had an alcoholic drink?", 1 = "Most days", 2 = "Once or twice a week", 3 = "2 or 3 times", 4 = "Once only", 5 = "Never" // b) "evralc", "Have you ever had an alcoholic drink? That is a whole drink, not just a sip?" 1 = Yes, 2 = No  
+    + late, "late", "In the past month, how many times have you stayed out after 9.00pm at night without your parents knowing where you were?", 1 = "Never", 2 = "1-2 times", 3 = "3-9 times", 4 = "10 or more times"  
+    + academics, "acvwell", "How important do you think it is for you to do well in your GCSE exams or Standard Grades (if you live in Scotland)?", 1 = "Very important", 2 = "Important", 3 = "Not  very important", 4 = "Not at all important"  
+    + missing school, "truant", "In the last 12 months, have you ever played truant, that is missed school without permission, even if it was only for a half day or single lesson?", 1 = Yes, 2 = No  
+* control variables  
+    + y_age, "dvage", age of child at data collection   
+    + y_male, "sex", adolescents gender, 1 = male, 2 = female  
+    + y_familysup, "famsup", "Do you feel supported by your family, that is the people who live with you?" 1 = "I feel supported by my family in most or all of the things I do", 2 = "I feel supported by mz family in some of the things I do" 3 = "I do not feel supported by my family in the things I do"  
+    + m_employed, "employ", "Are you in paid employment", 1 = Yes, 2 = No  
+    + m_depressed, "scsf6c", This is part of the health questionnaire for adults as the question is whether in the last 4 weeks "have you felt downhearted and depressed?", 1 = "All of the time", 2 = "Most of the time", 3 = "Some of the time", 4 = "A little of the time", 5 = "None of the time"  
+    + m_nonwhite, "racel", Participants could choose from a list of 18 different ethnicities. We recoded any from a white, irish, traveller to "white" and the rest to "non white"  
+    + m_nkids, "nkids_dv", the number of children in the household  
+    + m_socialwithkid, "socialkid", "How often do you and your child/children spend time together on leisure activities or outings outside the home such as going to the park or zoo, going to the movies, sports or to have a picnic?", 1 = "Never or rarely", 2 = "Once a month or less", 3 = "Several times a month", 4 = "About once a week", 5 = "Several times a week", 6 = "Almost every day"  
+    
+Firstly, it makes sense to put all our variables of interest in one place so that we can reference this going forward. For this we will make a list called "variables" that contains all of the variables we will use in our analyses and we will save it into the "objects" folder
+
+```{r choose-variables}
+# Make list with variable indicators of measures of interest
+variables <- list()
+
+## Measures included in our analyses
+variables[["vars_tech_sm"]] <- c("socweb", "netcht") #social media measures
+variables[["vars_lfsat"]] <- c("hsw", "hap", "hfm", "hfr", "hsc", "hlf") #life satisfaction
+variables[["additional"]] <- c("pidp", "year") #additional variables of importance
+variables[["controls"]] <- c("y_age", #adolescents age
+                             "y_male", #adolescents gender
+                             "y_famsup", #adolescents perceived family support
+                             "m_employed", #maternal empolyment
+                             "m_depressed", #maternal depression
+                             "m_nonwhite", #maternal ethnicity
+                             "m_nkids",#number of kids in household
+                             "m_socialwithkid") #amount of time mother socialises with children
+
+## Measures of interest but that could not be included in our analyses due to issues like that they are not asked every wave. We include them for the sake of improving data imputation. 
+variables[["vars_tech_comp"]] <- c("comp", "pchw", "cintnt") #computer measures (not used in current analyses but of interest)
+variables[["vars_tech_games"]] <- c("cpgs", "consol", "constm", "mulpgms") #gaming measures (not used in current analyses but of interest)
+variables[["vars_mobile"]] <- c("mobu") #mobile use measures (not used in current analyses but of interest)
+variables[["vars_se"]] <- c("esta","esti", "estb", "estj", "estc", "estk", "este", "estf") #self esteem measures (not used in current analyses but of interest)
+variables[["vars_sdq"]] <- paste0("sdq", letters)[1:25] #Strength and Difficult Questionnaire (not used in current analyses but of interest)
+
+## Combine for all the variables coming from adolescents
+variables[["vars_adolescents"]] <- c(variables[["vars_tech_sm"]], 
+                                    variables[["vars_lfsat"]], 
+                                    variables[["additional"]])
+
+## Combine all variables
+variables[["vars"]]<- c(variables[["vars_tech_sm"]],
+                        variables[["vars_lfsat"]])
+
+save(variables, file =  "../data/objects/variable_names.RData")
+```
+
+We first clean and recode the **social media use** variable. This variable is complicated as there was a mistake on the side of Understanding Society, who were inconsistent in how they directed children through the study in different years. Sometimes children who said they dont use social media on "netcht" were automatically coded as none on "socweb" and sometimes this wasnt the case. There is no easy solution for remedying this error, so we went with a recoding solution detailed below. 
+
+If an adolescent said they do not own a social media account or they dont use social media to interact with friends we coded them as the lowest score of 1, for the rest of the participants we took their netcht score which measures how much time they spent interacting socially online. This creates the following scale, which is ordinal in nature: 1 = None, 2 = Less than an hour, 3 = 1-3 hours, 4 = 4-6 hours, 5 = 7 or more hours.
+
+```{r make-netchtpool}
+data_long$netchtpool <- ifelse((data_long$socweb == 2 | data_long$netcht == 1), 1,
+                               ifelse(data_long$netcht == 2, 2, 
+                                       ifelse(data_long$netcht == 3, 3,
+                                              ifelse(data_long$netcht == 4, 4,
+                                                     ifelse(data_long$netcht == 5, 5, NA)))))
+```
+
+**Life satisfaction** has some issues with its coding in the data as well. The 7 item scale had a couple of partiicpants who scored 9. As the score for missing data is -9, we assume that these participants were wrongly coded and therefore code them as missing data (changing 9 to NA). We also need to reverse code all of the variables so that high scores show high satisfaciton. To get the mean satisfaciton measure we also take the mean of all 6 items.
+
+```{r correlations-lfsat}
+is.na(data_long[, variables$vars_lfsat]) <- data_long[, variables$vars_lfsat] == 9 #change 9 to NA
+data_long %<>% #reverse code
+  mutate_at(vars(hsw,hsc,hlf,hap,hfr,hfm), 
+            funs(recode(.,`1` = 7, `2` = 6, `3` = 5, `4` = 4, `5` = 3, `6` = 2, `7` = 1)))
+
+data_long %<>% #take mean for mean satisfaction measure
+  mutate(lifesat = rowMeans(subset(data_long, select = variables$vars_lfsat), na.rm = TRUE))
+```
+  
+We also recode the **control variables**. We need to do the following operations:  
+
+* Reverse the family support measure so that higher scores means more support  
+* Change employment coding so that higher score means the mother is employed  
+* Change maternal depression so that higher means more depression  
+* Recode ethnicity so that white, irish, traveller or any other white background is coded 1 and the rest is coded 0  
+* rename the variables so that the naming makes more sense   
+
+```{r controls}
+data_long %<>% 
+  mutate(
+    famsup = 4 - famsup,  
+    employ = recode(employ, `2` = 0, `1` = 1),  
+    scsf6c = 6 - scsf6c,  
+    racel = ifelse(racel < 5, 1, 0)
+    ) %>% 
+  dplyr::rename(
+    y_age = dvage,
+    y_male = sex, 
+    y_famsup = famsup,
+    m_employed = employ,
+    m_depressed = scsf6c,
+    m_nonwhite = racel,
+    m_nkids = nkids_dv,
+    m_socialwithkid = socialkid
+  )
+```
+
+Some control variables - family support and socialising with kids - are only asked every other wave. They are not asked in 2010, 2012, 2014, and 2016. We therefore infer the value of the control variable by taking the value from the previous wave if that is available, if not we take the value from the subsequent wave.
+
+```{r controls infer}
+for (i in 1:nrow(data_long)){
+  id <- data_long[i,"pidp"]
+  year_row <- data_long[i,"year"]
+  data_temp <- data_long %>% select(pidp, year, y_famsup, m_socialwithkid) %>% filter(pidp == id)
+  for (n in 1:nrow(data_temp)){
+    if(data_temp[n, "year"] %in% c("2010", "2012", "2014", "2016")){
+      if(n == 1){
+        data_temp[n, "y_famsup"] <- data_temp[n + 1, "y_famsup"]
+        data_temp[n, "m_socialwithkid"] <- data_temp[n + 1, "m_socialwithkid"]
+      } else {
+          data_temp[n, "y_famsup"] <- data_temp[n - 1, "y_famsup"]
+          data_temp[n, "m_socialwithkid"] <- data_temp[n - 1, "m_socialwithkid"]
+        }
+    } else {}
+  }
+  data_long[i, "y_famsup"] <- data_temp %>% filter(year == year_row) %>% pull(y_famsup)
+  data_long[i, "m_socialwithkid"] <- data_temp %>% filter(year == year_row) %>% pull(m_socialwithkid)
+}
+```
+
+We also recode the **additional variables** which include smoking, friends, eating with family, drinking alcohol, staying out late without the parents knowing, importance of academics and missing school. This should help the data imputation process, so that there is a more detailed yearly picture of each adolescent. We choose these variables as they are asked every year for each adolescent. 
+
+* for smoking we code those 1 who said they never smoked on the "evrsmo" question. We then used the "smofrq" to complete the rest (2 = "I have smoked only once or twice", 3 = "I used to smoke but I dont know", 4 = "I sometimes smoke, but not every week", 5 = "I usually smoke between one and six cigarettes a week", 6 = "I usually smoke more than six cigarettes a week").   
+* for alcohol we first reverse code dklm so that higher scores mean more alcohol consumption. Similar to smoking we then code all those who said they did not drink alcohol on "evralc" as 1 and if not they got their dklm score (5 = "Most days", 4 = "Once or twice a week", 3 = "2 or 3 times", 2 = "Once only", 1 = "Never")  
+* for missing school we recode the "truant" measure so that 0 = No, 1 = Yes  
+* for importance of academics we recoded so that higher scores show higher importance of academics  
+* we did not change the coding for friends (which is continuous) and familyeat  
+
+```{r comparison-specs}
+# recode missing values (9) to NA
+is.na(data_long[, c("eatlivu", "dklm", "smofrq", "evrsmo", "truant", "acvwell", "late", "regalco", "evralc")]) <- data_long[, c("eatlivu", "dklm", "smofrq", "evrsmo", "truant", "acvwell", "late", "regalco", "evralc")] == 9
+
+# recode the variables
+data_long %<>% 
+  mutate(
+    smoke = ifelse(data_long$evrsmo == 2, 0, data_long$smofrq) + 1,
+    dklm = ifelse(data_long$dklm == 1, 5, 
+                          ifelse(data_long$dklm == 2, 4, 
+                                 ifelse(data_long$dklm == 3, 3, 
+                                        ifelse(data_long$dklm == 4, 2, 
+                                               ifelse(data_long$dklm == 5, 1, 
+                                                      ifelse(data_long$dklm == 6, 1, NA)))))),
+    truant = 2 - data_long$truant,
+    academics = 5 - data_long$acvwell
+  ) %>% 
+  mutate(
+    alcohol = ifelse(data_long$evralc == 2, 1, .$dklm)
+  ) %>% 
+  dplyr::rename(
+    friends = npal,
+    familyeat = eatlivu
+  ) %>% 
+  dplyr::select(
+    -c("evrsmo", "smofrq", "acvwell", "evralc", "dklm")  # drop variables to avoid duplicates
+  )
+```
+             
+We also do some more cleaning on variables that we will use for data imputation, to give us a better picture. That includes the Strength and Difficultes Questionnaire, the Self-Esteem Questionnaire and different technoloy use measurements.
+
+```{r recode-SDQ-and-self-esteem}
+data_long %<>% 
+  mutate_at(vars(sdql, sdqv, sdqr, sdqb, sdqe, sdqo, sdqj, sdqf, sdqm, sdqs, sdqc,
+                 sdqp, sdqw, sdqx, sdqh), 
+            funs(recode(.,`1` = 3, `2` = 2, `3` = 1)))
+is.na(data_long[, variables$vars_sdq]) <- data_long[, variables$vars_sdq] == 9
+
+is.na(data_long[, variables$vars_se]) <- data_long[, variables$vars_se] == 9
+data_long %<>%
+  mutate_at(vars(estk, estj, estc, esta), 
+            funs(recode(.,`1` = 4, `2` = 3, `3` = 2, `4` = 1)))
+
+```
+
+In addition to recoding the technology use measures, we also recode y_male so that 1 = male and 0 = female.  
+
+```{r recode-tech-use}
+is.na(data_long[, c(variables$vars_tech_comp, variables$vars_tech_games, variables$vars_tech_sm, variables$vars_tech_tv)]) <- data_long[, c(variables$vars_tech_comp, variables$vars_tech_games, variables$vars_tech_sm, variables$vars_tech_tv)] == 9
+data_long %<>% 
+  mutate_at(vars(comp), funs(recode(.,`1` = 1, `2` = 0, `3` = 0))) %>% 
+  mutate_at(vars(consol, mulpgms, socweb, mobu, y_male), funs(recode(.,`1` = 1, `2` = 0))) %>%  # sex: 1 = male, 0 = female
+  mutate_at(vars(pchw, cintnt), funs(recode(.,`1` = 5, `2` = 4, `3` = 3, `4` = 2, `5` = 1))) 
+data_long$y_male <- as.factor(data_long$y_male)
+```
+
+## Exclusion of cases
+
+There is a case which is duplicated, which we therefore remove. This is necessary for turning out data back into wide format. 
+
+```{r exclusion}
+data_long <- data_long[-c(17669),] #remove duplicate row
+```
+
+## Imputation of missing data
+
+We also imputed missing data using the Predictive Mean Matching method. We do not impute the mean satisfaction score and our social media measure as they are made of components. We impute the components and then re-calculate them at the end. 
+
+```{r imputation, eval=T}
+# variables that should be imputed
+vars_pred <- c(
+  #life satisfaction
+  "hsw", "hap", "hfm", "hfr", "hsc", "hlf",
+  #social media use (component variables)
+  "socweb", "netcht",
+  #controls
+  "y_age", "y_male", "y_famsup", "m_employed","m_depressed", 
+  "m_nonwhite", "m_nkids", "m_socialwithkid"
+  )
+
+# variables that should not be imputed
+vars_excl_1 <- select(data_long, -(vars_pred)) %>% names()
+
+# variables that should not be used to impute
+vars_excl_2 <- c("pidp", "mnpid", "hidp", "pn1sex", "pn2sex", "pns1sex", "pns2sex", "dvage_orig",
+                 "pidp1", "pidp2", "pidp3", "pidp4", 
+                 "lifesat", "netchtpool")
+  
+# estimate missing data
+d_na_per <- sum(is.na(data_long[vars_pred])) / (nrow(data_long[vars_pred]) * ncol(data_long[vars_pred]))
+
+# define predictor matrix
+pred_ma <- quickpred(data_long, exclude = vars_excl_2)
+pred_ma[vars_excl_1, ] <- 0
+
+# impute missing data
+data_long_tmp <- mice(data_long, method = "pmm", m = 1, predictorMatrix = pred_ma, maxit = 20,
+                      seed = 170819)
+data_long_imp <- mice::complete(data_long_tmp, include = FALSE)
+
+# recalc mean for life satisfaction based on imputed data
+data_long_imp %<>% 
+  mutate(lifesat = rowMeans(subset(data_long_imp, select = variables$vars_lfsat), na.rm = TRUE))
+
+# recalc social media score based on imputed data
+data_long_imp$netchtpool <- ifelse((data_long_imp$socweb == 2 | data_long_imp$netcht == 1), 1,
+                               ifelse(data_long_imp$netcht == 2, 2, 
+                                       ifelse(data_long_imp$netcht == 3, 3,
+                                              ifelse(data_long_imp$netcht == 4, 4,
+                                                     ifelse(data_long_imp$netcht == 5, 5, NA)))))
+```
+
+## Make wide dataset 
+
+We then need to convert the dataset back to wide format, mainly so that we can start modelling with it. We do so for both the imputed and original dataset. 
+
+```{r long-1, eval=T}
+### we need to put the data into wide format first for this we first create a dataset where each variable exists for each year (2008_lifesat, 2009_lifesat etc.)
+
+long_to_wide <- function(object){
+  # convert data from long to wide
+  
+  data_wide_temp <- object %>%  
+  gather(variable, value, -c(pidp,year)) %>%
+  unite(temp, year, variable) %>%
+  spread(temp, value)
+
+names(data_wide_temp) <- as.vector(sub("20", "y", names(data_wide_temp)))
+data_wide_yearly <- sapply(data_wide_temp[,-1], as.numeric)
+data_wide_yearly <- as.data.frame(cbind(data_wide_temp$pidp, data_wide_yearly))
+colnames(data_wide_yearly) <- names(data_wide_temp)
+
+### we wrangle datasets further, so that instead of having a yearly variable, we have a variable for the first, second, etc. wave completed. 
+temp_data_long <- object %>% group_by(pidp) %>% arrange(pidp, year) %>% dplyr::mutate(rank = row_number())
+temp_data_long$rank <- ifelse(temp_data_long$rank == 1, "a", 
+                              ifelse(temp_data_long$rank == 2, "b",
+                                     ifelse(temp_data_long$rank == 3, "c",
+                                            ifelse(temp_data_long$rank == 4, "d", 
+                                                   ifelse(temp_data_long$rank == 5, "e",
+                                                          ifelse(temp_data_long$rank == 6, "f",
+                                                                 ifelse(temp_data_long$rank == 7, "g",
+                                                                        ifelse(temp_data_long$rank == 8, "h", NA))))))))
+
+# put data into wide format
+data_wide_temp <- temp_data_long %>%  
+  gather(variable, value, -c(pidp,rank)) %>%
+  unite(temp, rank, variable) %>%
+  spread(temp, value)
+
+# make columns numeric, but not the participant ID
+data_wide <- sapply(data_wide_temp[,-1], as.numeric)
+data_wide <- as.data.frame(cbind(data_wide_temp$pidp, data_wide))
+colnames(data_wide) <- names(data_wide_temp)
+
+return(data_wide)
+}
+
+data_wide <- long_to_wide(data_long)
+data_wide_imp <- long_to_wide(data_long_imp)
+```
+
+```{r count-waves, eval=T}
+# We also make one variable where we look at how many waves each person completed
+data_wide$waves <- ifelse(is.na(data_wide$b_year) == TRUE, 1,
+                       ifelse(is.na(data_wide$c_year) == TRUE, 2,
+                              ifelse(is.na(data_wide$d_year) == TRUE, 3,
+                                     ifelse(is.na(data_wide$e_year) == TRUE, 4,
+                                            ifelse(is.na(data_wide$f_year) == TRUE, 5,
+                                                   ifelse(is.na(data_wide$g_year) == TRUE, 6, 
+                                                          ifelse(is.na(data_wide$h_year) == TRUE, 7, 8)))))))
+data_wide_imp$waves <- ifelse(is.na(data_wide_imp$b_year) == TRUE, 1,
+                       ifelse(is.na(data_wide_imp$c_year) == TRUE, 2,
+                              ifelse(is.na(data_wide_imp$d_year) == TRUE, 3,
+                                     ifelse(is.na(data_wide_imp$e_year) == TRUE, 4,
+                                            ifelse(is.na(data_wide_imp$f_year) == TRUE, 5,
+                                                   ifelse(is.na(data_wide_imp$g_year) == TRUE, 6, 
+                                                          ifelse(is.na(data_wide_imp$h_year) == TRUE, 7, 8)))))))
+```
+
+```{r save, include=F}
+save.image("../data/workspace_1.RData")
+save(data_wide, file =  "../data/cleaned/data_wide.RData")
+save(data_wide_imp, file =  "../data/cleaned/data_wide_imp.RData")
+```

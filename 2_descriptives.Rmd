@@ -1,0 +1,266 @@
+---
+title: "Descriptives"
+geometry: margin=2cm
+output:
+  html_document:
+    toc: TRUE
+  pdf_document: default
+editor_options:
+  chunk_output_type: inline
+---
+
+```{r defaults, cache=FALSE, include=FALSE}
+knitr::opts_chunk$set(warning=F)
+set.seed(170819)
+options(width = 120, digits = 3)
+```
+
+```{r libraries-and-settings, include=F}
+packages <- c("corrplot", "foreign", "gridExtra", "knitr", 
+              "lavaan", "lme4", "plyr", "sjstats", "tidyverse")
+invisible(lapply(packages, library, character.only = TRUE))
+load("../data/workspace_1.RData")
+load("../data/objects/variable_names.RData")
+```
+
+# Data inspection
+
+This markdown provides descriptive data about the datasets to explore them further and ensure there were no substantial errors in the data wrangling process. 
+
+We will first have a look at the data itself. The dataset has `r dplyr::n_distinct(data_long$pidp)` participants and `r nrow(data_long)` individual responses. We will analyse the variables of interest (life satisfaction and social media use). The participants had a mean age of `r round(mean(data_long$dvage, na.rm = TRUE),2)` (SD = `r round(sd(data_long$dvage, na.rm = TRUE),2)`), the ages ranged from `r round(min(data_long$dvage, na.rm = TRUE))` to `r round(max(data_long$dvage, na.rm = TRUE))`. We note that while the Understanding Society website states that adolescents are 11-15, the survey also includes 10 year olds. There were `r table(data_long[match(unique(data_long$pidp), data_long$pidp),]$y_male)[["0"]]` girls and `r table(data_long[match(unique(data_long$pidp), data_long$pidp),]$y_male)[["1"]]` boys. 
+
+### Number of participants in each wave
+
+```{r number-of-individuals-per-wave}
+table_1 <- table(data_long$year)
+table_1 <- as.data.frame(table_1)
+knitr::kable(table_1, col.names = c("Wave", "Number of Individuals"), caption = "Number if Individuals per Wave")
+```
+
+```{r graph-for-number-of-individuals-in-each-wave}
+ggplot(data = table_1) +
+  geom_bar(aes(x = Var1, y = Freq), stat = "identity") +
+  labs(x = "Year", y = "Number of participants", caption = "Number of adolescents in each wave.")
+```
+
+### Number of individuals answering each question
+
+Not every question was asked in every wave, we therefore need to examine the number of participants who answered each question:
+
+```{r participants-per-question}
+table_2 <- colSums(!is.na(data_long))
+table_2 <- table_2[2:length(table_2)]
+knitr::kable(table_2, caption = "Number if Individuals per Question")
+```
+
+It is easier to examine the participants per question per year, and only those variables that are of interest in our study. We note that while y_famsup and m_socialwithkid was only measured every other year, we infered the yearly data in the previous data wrangling script. Furthermore, m_nonwhite is only asked once, so we also infer the subsequent answers from the answer given in the first wave.
+
+```{r Participants-per-question-per-year}
+table_3 <- data_long %>% 
+  group_by(year) %>% 
+  summarise_all(funs(sum(!is.na(.)))) %>% 
+  select(year, lifesat, hsw, hap, hfm, hfr, hsc, hlf,
+  netchtpool,y_age, y_male, y_famsup, m_employed,m_depressed, 
+  m_nonwhite, m_nkids, m_socialwithkid)
+knitr::kable(table_3, caption = "Number if Individuals per Question per Year")
+```
+
+### Question means across years
+
+We can also look at the question means across years to see whether there are any major changes over time.
+
+```{r variable-means-per-year, warning=F}
+table_4 <- data_long %>% 
+  group_by(year) %>% 
+  summarise_all(funs(mean(., na.rm = TRUE))) %>% 
+  mutate_at(vars(-year), funs(round(.,2))) %>% 
+  select(year, lifesat, hsw, hap, hfm, hfr, hsc, hlf,
+  netchtpool,y_age, y_famsup, m_employed,m_depressed, 
+  m_nonwhite, m_nkids, m_socialwithkid)
+knitr::kable(table_4, caption = "Mean of Question by Year")
+```
+
+We can look at lifesatisfaction and social media use across years as well.
+
+```{r frequencies-per-year-technology-use}
+data_long %>% 
+  select("lifesat", "netchtpool", "pidp", "year") %>%
+  gather(var, value, -c("pidp", "year")) %>%
+  ggplot(aes(x = value)) +
+  geom_bar() +
+  facet_grid(year ~ var, scales = 'free') +
+  theme_classic()
+```
+
+### Variable correlations
+
+We also look at the correlations between variables, to get an overview of the data and to check for any mistakes in recoding. First, we examine the correlation between the different domains of life satisfaction and our social media use measure. The different satisfaction measures are hap (appearance), hfm (family), hfr (friends), hlf (life), hsc (school), hsw (schoolwork), lifesat (mean). We also examine netchtpool (social media use):
+
+```{r correlations-lfsat}
+vars_data <- subset(data_long, select = c(variables$vars_lfsat, "netchtpool"))
+correlate <- psych::corr.test(vars_data)
+corrplot(correlate$r, type = "upper", method = "color", addCoef.col = "black",
+         tl.col = "black", tl.srt = 45, order = "AOE")
+```
+
+Because of our focus on differences in gender, we also have a look just for girls:  
+
+```{r correlations-girls}
+vars_data <- subset(data_long, select = c(variables$vars_lfsat, "netchtpool", "y_male"))
+vars_data_g <- vars_data %>% 
+  filter(y_male == 0) %>% 
+  select(-y_male)
+correlate <- psych::corr.test(vars_data_g)
+corrplot(correlate$r, type = "upper", method = "color", addCoef.col = "black",
+         tl.col = "black", tl.srt = 45, order = "AOE")
+```
+
+And also boys:
+
+```{r correlations-boys}
+vars_data_b <- vars_data %>% 
+  filter(y_male == 1) %>% 
+  select(-y_male)
+correlate <- psych::corr.test(vars_data_b)
+corrplot(correlate$r, type = "upper", method = "color", addCoef.col = "black",
+         tl.col = "black", tl.srt = 45, order = "AOE")
+```
+
+### Trends over Time
+
+We also examine trends in the measures over time. For this we use a summary function shown below:  
+
+```{r summary-function, eval = TRUE, include = TRUE}
+summary_se <- function(data=NULL, measurevar, groupvars=NULL, na.rm=FALSE,
+                      conf.interval=.95, .drop=TRUE) {
+
+    # New version of length which can handle NA's: if na.rm==T, don't count them
+    length2 <- function (x, na.rm=FALSE) {
+        if (na.rm) sum(!is.na(x))
+        else       length(x)
+    }
+
+    # This does the summary. For each group's data frame, return a vector with
+    # N, mean, and sd
+    datac <- ddply(data, groupvars, .drop=.drop,
+      .fun = function(xx, col) {
+        c(N    = length2(xx[[col]], na.rm=na.rm),
+          mean = mean   (xx[[col]], na.rm=na.rm),
+          sd   = sd     (xx[[col]], na.rm=na.rm)
+        )
+      },
+      measurevar
+    )
+
+    # # Rename the "mean" column    
+    # datac <- plyr::rename(datac, c("mean" = measurevar))
+
+    datac$se <- datac$sd / sqrt(datac$N)  # Calculate standard error of the mean
+
+    # Confidence interval multiplier for standard error
+    # Calculate t-statistic for confidence interval: 
+    # e.g., if conf.interval is .95, use .975 (above/below), and use df=N-1
+    ciMult <- qt(conf.interval/2 + .5, datac$N-1)
+    datac$ci <- datac$se * ciMult
+
+    return(datac)
+}
+```
+
+```{r wellbeing-over-time, warnings = FALSE, include = TRUE}
+calc_means <- function(measurevar, data, groupvars, na.rm){
+  # function that calculates data such as means from data set
+  
+  tmp <- summary_se(data, measurevar, groupvars, na.rm)
+  tmp$variable <- measurevar
+  return(tmp)
+}
+```
+
+We first examine the trends in life satisfaction measures and social media use over the study waves.
+
+```{r wellbeing-over-time-figure}
+vars_lifesat <- c("netchtpool", variables$vars_lfsat, "lifesat")  # select vars
+means_lifesat <- lapply(vars_lifesat, calc_means, data = data_long, groupvars = "year", na.rm = TRUE) %>%
+  ldply()
+
+p_means <- ggplot(means_lifesat, 
+                  aes(x = year, y = mean, ymin = mean - ci, ymax = mean + ci)) +
+  geom_errorbar() +
+  geom_point() + 
+  scale_y_continuous(limits = c(1,7)) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.3)) +
+  facet_wrap( ~ variable, scales = "free")
+plot(p_means)
+```
+
+We can take a look at the gender differences in these trends as well: 
+
+```{r wellbeing-over-time-with-sex}
+means_lifesat_gender <- lapply(vars_lifesat, calc_means, data = data_long, groupvars = c("year", "y_male"), na.rm = TRUE) %>%
+  ldply()
+p_means_gender <- ggplot(means_lifesat_gender, 
+                  aes(x = year, y = mean, ymin = mean - ci, ymax = mean + ci, colour = y_male)) +
+  geom_errorbar() +
+  geom_point() + 
+  scale_y_continuous(limits = c(1,7)) +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.3)) +
+  facet_wrap(~ variable)
+plot(p_means_gender)
+```
+
+### CFA of life satisfaction
+
+We can examine a CFA of life satisfaction as a measure, to help us determine the nature of the measurement. 
+
+```{r lifesat}
+model <- '
+lifsat =~ hsw + hap + hfm + hfr + hsc + hlf  
+'
+fit_lifsat <- cfa(model, data_long %>% filter(year == 2009), estimator = "MLR")
+summary(fit_lifsat, std = TRUE, fit = TRUE)
+```
+
+# ICC
+
+Before we run our RI-CLPMs, we also check how much variance is due to within-person changes vs. between-person differences. We do this by calculating icc values
+
+```{r icc}
+# Life satisfaction 
+## hsw
+model_0_hsw <- lmer(hsw ~ (1 | pidp), data_long)  # estimate null model
+icc_hsw <- icc(model_0_hsw)  # get ICC
+
+## hap
+model_0_hap <- lmer(hap ~ (1 | pidp), data_long)  # estimate null model
+icc_hap <- icc(model_0_hap)  # get ICC
+
+## hfm
+model_0_hfm <- lmer(hfm ~ (1 | pidp), data_long)  # estimate null model
+icc_hfm <- icc(model_0_hfm)  # get ICC
+
+## hfr
+model_0_hfr <- lmer(hfr ~ (1 | pidp), data_long)  # estimate null model
+icc_hfr <- icc(model_0_hfr)  # get ICC 
+
+## hsc
+model_0_hsc <- lmer(hsc ~ (1 | pidp), data_long)  # estimate null model
+icc_hsc <- icc(model_0_hsc)  # get ICC 
+
+## hlf
+model_0_hlf <- lmer(hlf ~ (1 | pidp), data_long)  # estimate null model
+icc_hlf <- icc(model_0_hlf)  # get ICC 
+
+## combine
+icc_lifesat <- c(icc_hsw, icc_hap, icc_hfm, icc_hfr, icc_hsc, icc_hlf)
+
+# Social media use
+model_0_netchtpool <- lmer(netchtpool ~ (1 | pidp), data_long)  # estimate null model
+icc_netchtpool <- icc(model_0_netchtpool)  # get ICC
+```
+
+We find that `r min(icc_lifesat) * 100` - `r max(icc_lifesat) * 100` percent of the variance in life satisfaction is due to between-person differences. As a direct result, `r (1 - min(icc_lifesat)) * 100` - `r (1 - max(icc_lifesat)) * 100` percent of the variance in life satisfaction result from within-person changes.
+
+Next, we find that `r icc_netchtpool * 100` percent of the variance in social media use is due to between-person differences. Hence, `r (1 - icc_netchtpool) * 100` percent of the variance in social media use result from within-person changes.
+
+Both results show that it is highly useful to run a cross-lagged panel model with random intercepts, as considerable parts of variance might be due to between person differences and not to within-person effects.

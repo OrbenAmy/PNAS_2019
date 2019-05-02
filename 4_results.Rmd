@@ -1,0 +1,962 @@
+---
+title: "Plotting"
+geometry: margin=2cm
+output:
+  html_document:
+    toc: true
+  pdf_document:
+    toc: true
+editor_options:
+  chunk_output_type: inline
+---
+
+```{r defaults, cache=FALSE, include=FALSE}
+knitr::opts_chunk$set(warning=F)
+set.seed(170819)
+options(width = 120, digits = 3, knitr.kable.NA = '')
+```
+
+```{r libraries-and-settings, include=F}
+# load libraries 
+packages <- c("corrplot", "foreign", "gridExtra", "knitr", 
+              "lavaan", "magrittr", "plyr", "tidyverse", "viridisLite")
+invisible(lapply(packages, library, character.only = TRUE))
+theme_set(theme_classic())
+
+# load data
+load("../data/cleaned/data_wide.RData")
+load("../data/cleaned/data_wide_imp.RData")
+results_frame <- readRDS("../data/objects/sca.RData")
+results_frame_sca <- readRDS("../data/objects/sca.RData")
+```
+
+This markdown examines the results of the modelling which was completed in the third script. It also plots the results in two figures which are presented in the paper, and two larger are more complete versions of these figures which might be of interest to the readers. Figure 1 is an overview of the Specification Curve Analysis (SCA) while Figure 2 is a comparison between males and females. Figure 2 presents both the SCA (which is useful to show the background variance in analytical results) and a 'preferred model' which is used to determine whether the effects are different in teenage boys and girls.  
+
+The preferred model is used for the comparison between males and females because it eases interpretation of results. It is a single specification from the original SCA; the combination of analytical decisions that we believe was the most robust and informed way of analysing the data. The model is therefore most alike to what would be included in a normal paper, i.e. a single analysis method applied to the dataset of interest. Like in regular research, the choice of this model is informed by theory and the capabilities of the dataset. In particular the model entails the following analytical decisions:  
+
+* It analyses *mean satisfaction* as one of the outcome variables as this measure  takes into account the participants score in all 6 life satisfaction domains   
+* It examines *both genders* seperately in order to allow us to compare them and see whether they are differentially affected by social media    
+* It analyses *4 Waves*: using 3 waves would have been the absolute minimum necessary for our RI-CLPMs, and using 5 would have decreased the number of participants substantially    
+* It uses *WLSMV estimators* to account for the ordinal measures included in our analyses   
+* It includes *all control variables* to account for factors that could influence both social media use and life satisfaction   
+* It uses *imputed data* to maximise the number of participants by imputing missing data  
+
+
+# Set-up
+
+Before we start, we need to change our imputation column in the results frames as we want it to say "Imputed" and not "Imputated"
+```{r impute change}
+results_frame$imputation <- ifelse(results_frame$imputation == "Original", "Original", "Imputed")
+results_frame_sca$imputation <- ifelse(results_frame_sca$imputation == "Original", "Original", "Imputed")
+```
+
+We then set up different objects and variables so we can analyse the data. First we name all the different analytical decisions that made up our SCA.  
+```{r define-variables}
+### define coefficients of variables which are found in the results frame
+labels_coeffs <- sapply(c("b2", "b3", "cor1"), rep, 7)
+names_coeffs <- c("est", "est_ll", "est_ul", "std", "std_ll", "std_ul", "pvalue")
+vars_coeffs <- paste(labels_coeffs, names_coeffs, sep = "_")
+
+### define names of paths
+names_path <- c("1. Between-Person Correlation", 
+                  "2. Predictor: Social Media Use",
+                  "3. Predictor: Life Satisfaction")
+
+### define well-being 
+vars_wellbeing <- c("hap", "hsw", "hlf", "hsc", "hfm", "hfr", "lifesat")
+names_wellbeing <- c("Satisfaction appearance", "Satisfaction school work", 
+                   "Satisfaction life", "Satisfaction school",
+                   "Satisfaction family", "Satisfaction friends",
+                   "Mean satisfaction")
+levels_wellbeing <- c("Satisfaction appearance", "Mean satisfaction", #this is used as an ordering variable later on in the manuscript
+                      "Satisfaction life", "Satisfaction school work", 
+                      "Satisfaction school", "Satisfaction family", 
+                      "Satisfaction friends")
+
+### define waves
+vars_wav <- c(3, 4, 5, 6)
+names_wav <- c("3 Waves", "4 Waves", "5 Waves", "6 Waves")
+
+### define controls
+vars_control <- c("NULL", "a_y_age", "a_y_male", "a_y_famsup", 
+                  "a_m_employed","a_m_depressed", "a_m_nonwhite", 
+                  "a_m_nkids", "a_m_socialwithkid", "all")
+names_control <- c("No Controls", "Age", "Gender", "Support of Family",
+                 "Maternal Employment", "Maternal Depression", 
+                 "Maternal Ethnicity", "Number of Siblings",
+                 "Maternal Socialising", "All Controls")
+
+### define other
+vars_estimator <- c("MLR", "WLSMV")
+vars_imputated <- c("Original", "Imputed")
+vars_gender <- c("Female", "Male", "All")
+
+#put all variables together
+variables <- c(vars_wellbeing, vars_wav, vars_control, vars_estimator, vars_imputated, vars_gender)
+```
+
+We also write two functions: one allows us the rename the life satisfaction variables (rename_lifesat), the other extract the 'preferred model'. 
+```{r establish functions}
+# generic functions
+rename_lifesat <- function(x) {
+  # function that renames lifesat vars
+    
+  tmp <- c(
+    ifelse(x == "hap", "Satisfaction appearance", 
+           ifelse(x == "hsw", "Satisfaction school work",
+                  ifelse(x == "hlf", "Satisfaction life",
+                         ifelse(x == "hsc", "Satisfaction school",
+                                ifelse(x == "hfm", "Satisfaction family",
+                                       ifelse(x == "hfr", "Satisfaction friends",
+                                              ifelse(x == "lifesat", "Mean satisfaction", "All measures"))))))))
+    return(tmp)
+}
+
+
+rename_lifesat_short <- function(x) {
+  # function that renames lifesat vars
+    
+  tmp <- c(
+    ifelse(x == "hap", "Appearance", 
+           ifelse(x == "hsw", "School work",
+                  ifelse(x == "hlf", "Life",
+                         ifelse(x == "hsc", "School",
+                                ifelse(x == "hfm", "Family",
+                                       ifelse(x == "hfr", "Friends",
+                                              ifelse(x == "lifesat", "Mean", "All measures"))))))))
+    return(tmp)
+}
+
+# extract number of preferred models
+pref_spec_no <- function(object, 
+                         waves = 4, 
+                         estimator = "WLSMV", 
+                         imputation = "Imputed", 
+                         controls = c("a_y_age", "a_y_famsup", "a_m_employed", "a_m_depressed", "a_m_nonwhite", "a_m_nkids", "a_m_socialwithkid"), 
+                         gender = c("All", "Female", "Male", "Total")) {
+  
+  # extract number of preferred specs from results frame, if we take a total results frame (gender = "Total") then we use gender = All in our preferred model
+  if(gender != "Total"){
+    tmp <- which((object$wav == waves) &
+                 (object$estimator == estimator) &
+                 (object$imputation == imputation) & 
+                 (object$cont == controls) &
+                 (object$gender %in% gender))
+  } else {
+     tmp <- which((object$wav == waves) &
+                 (object$estimator == estimator) &
+                 (object$imputation == imputation) & 
+                 (object$cont == controls) &
+                 (object$gender == "All"))
+  }
+  
+  return(tmp)
+}
+```
+
+# Data Checks
+
+We also check our SCA to see whether there were any problems or mistakes in the analysis process and to extract details like the number of participants.  
+
+We first examine the percentage of models that failed to converge, but we find that all models converged
+```{r table-fail, warning=F}
+table(is.na(results_frame$b2_est.std))
+```
+
+We also examine that we got enough participants for the amount of parameters, which we do.  
+```{r n-param}
+results_frame$ratio <- results_frame$n/results_frame$parameter_n
+table(results_frame$ratio)
+```
+
+Lastly we examine the amount of participants and specifications:  
+```{r char-sca}
+n_min <- min(results_frame$n)
+n_max <- max(results_frame$n)
+n_med <- median(results_frame$n)
+n_scas <- nrow(results_frame)
+```
+
+- In the SCA with the smallest number of respondents, _n_ was `r n_min` respondents.
+- In the SCA with the largest number of respondents, _n_ was `r n_max` respondents.
+- The median number of respondents was _n_ = `r n_med`.
+- The total number of specifications are: `r n_scas`.  
+
+# Data Wrangling
+
+We filter the variables of interest from the result frame and arrange them in terms of Predictor: Social Media Use (b2). We also filter b3 which is Predictor: Life Satisfaction, and cor1 which is social media use correlation with life satisfaction on the between person level. 
+
+```{r sort-effect-sizes-for-plotting}
+results_frame %<>% 
+  select(lifesatisfaction, variables, gender, wav, cont, estimator, imputation, vars_coeffs)
+```
+
+Then we mark those coefficients (b2, b3 or cor1) that are significant (i.e. p < 0.05). 
+```{r significant}
+results_frame$b2_sig <- "0"
+results_frame$b2_sig[results_frame$b2_pvalue < .05] <- "1"
+results_frame$b3_sig <- "0"
+results_frame$b3_sig[results_frame$b3_pvalue < .05] <- "1"
+results_frame$cor1_sig <- "0"
+results_frame$cor1_sig[results_frame$cor1_pvalue < .05] <- "1"
+```
+
+# General SCA results
+
+We first examine the amount and proportion of significant specifications in our SCAs to get a general overview of the results and possible gender differences. The get_sig function calculates the percentage of specifications significant for the different paths. The function splits the results into percentage significant *and* negative and percentage significant *and* positive.  
+```{r between-subject}
+get_sig <- function(temp_frame, path){
+  if(path == "b2"){
+    temp_frame %>% 
+  filter(b2_sig == 1) %>% 
+  mutate(neg = ifelse(b2_est > 0, 0, 1)) %>% 
+  group_by(neg) %>% 
+  summarise(`percentage sig b2` = round((n()/(nrow(temp_frame))*100),0), number_sig = n())
+  } else if (path == "b3"){
+    temp_frame %>% 
+  filter(b3_sig == 1) %>% 
+  mutate(neg = ifelse(b3_est > 0, 0, 1)) %>% 
+  group_by(neg) %>% 
+  summarise(`percentage sig b3` = round((n()/(nrow(temp_frame))*100),0), number_sig = n())
+  } else if (path == "cor1"){
+    temp_frame %>% 
+  filter(cor1_sig == 1) %>% 
+  mutate(neg = ifelse(cor1_est > 0, 0, 1)) %>% 
+  group_by(neg) %>% 
+  summarise(`percentage sig cor1` = round((n()/(nrow(temp_frame))*100),0), number_sig = n())
+  }
+}
+
+get_sig(results_frame, "b2")
+get_sig(results_frame, "b3")
+get_sig(results_frame, "cor1")
+```
+
+We can also do this splitting by gender, looking at the percentage of significant results that are found when analysing males, females or all genders.  
+```{r between-subject-gender}
+# find total significant models
+total_sig <- sum(as.numeric(results_frame$b2_sig)) + sum(as.numeric(results_frame$b3_sig)) + sum(as.numeric(results_frame$cor1_sig))
+
+# find significant models by gender
+## girls
+results_frame_temp <- results_frame %>% 
+  filter(gender == "Female")
+sig_girls <- (sum(as.numeric(results_frame_temp$b2_sig)) + sum(as.numeric(results_frame_temp$b3_sig)) + sum(as.numeric(results_frame_temp$cor1_sig)))/total_sig * 100
+
+## boys
+results_frame_temp <- results_frame %>% 
+  filter(gender == "Male")
+sig_boys <- (sum(as.numeric(results_frame_temp$b2_sig)) + sum(as.numeric(results_frame_temp$b3_sig)) + sum(as.numeric(results_frame_temp$cor1_sig)))/total_sig * 100
+
+## all
+results_frame_temp <- results_frame %>% 
+  filter(gender == "All")
+sig_all <- (sum(as.numeric(results_frame_temp$b2_sig)) + sum(as.numeric(results_frame_temp$b3_sig)) + sum(as.numeric(results_frame_temp$cor1_sig)))/total_sig * 100
+```
+
+The analyses find the following:  
+
+- Total significant specifications: `r total_sig`  
+- Percentage significant specifications: `r round(100*total_sig/(nrow(results_frame)*3),0)` 
+- Significant spec girls: `r sig_girls`  
+- Significant spec boys: `r sig_boys`  
+- Significsnt spec all: `r sig_all`  
+
+# Standardized Variables
+
+We now make tables of results examining the *standardised* paths in the model. Below these tables we also include the unstandardised path tables because they are necessary for girl-boy comparisons.  
+
+### Function
+We first define the function we use to extract the results.
+```{r fun-standardized-solution}
+make_table <- function(object, standardized = TRUE, gender = "Total") {
+  
+  # get preferred specification
+  preferred_spec_no <- pref_spec_no(object, gender = gender)
+  
+  # extract the results for the preferred specification
+  tab_pref <- data.frame(
+    Path = sapply(names_path, rep, 7) %>% as.vector(),
+    preferred_spec_effect = object[preferred_spec_no, ] %>% 
+      mutate(Measure = rename_lifesat(lifesatisfaction)) %>% 
+      {if(isTRUE(standardized)) {
+        select(., Measure, cor1_std, b2_std, b3_std)} else {
+          select(., Measure, cor1_est, b2_est, b3_est)
+        }} %>% 
+      gather(key = "effect", value = "size", -Measure),
+    preferred_spec_pvalue = object[preferred_spec_no, ] %>% 
+      mutate(Measure = rename_lifesat(lifesatisfaction)) %>% 
+      select(Measure, cor1_pvalue, b2_pvalue, b3_pvalue) %>% 
+      gather(key = "effect", value = "size", -Measure)
+  ) %>% 
+    select(Path, Measure = preferred_spec_effect.Measure, 
+           preferred_spec_effect = preferred_spec_effect.size, 
+           preferred_spec_pvalue = preferred_spec_pvalue.size, 
+           -preferred_spec_pvalue.Measure, -preferred_spec_pvalue.effect)
+  
+  # Extract the Results from the SCAs
+  # First, filter the data depending on Gender Specification
+  if(gender == "Female") {
+    object %<>% filter(gender == "Female")
+  } else if (gender == "Male") {
+    object %<>% filter(gender == "Male")
+  } else if (gender == "All") {
+    object %<>% filter(gender == "All")
+  } else {}
+
+  # extract the general results (average/medium of all combined)
+  tab_sca_gen <- data.frame(
+    Path = names_path,
+    Measure = rep("All measures", 3),
+    if(isTRUE(standardized)) {
+      SCA_median_effect = c(median(object$cor1_std), median(object$b2_std), median(object$b3_std))
+    } else {
+      SCA_median_effect = c(median(object$cor1_est), median(object$b2_est), median(object$b3_est))
+    },
+    SCA_perc_significant = c(mean(as.numeric(object$cor1_sig)), mean(as.numeric(object$b2_sig)), mean(as.numeric(object$b3_sig)))
+    ) %>% 
+    set_colnames(c("Path", "Measure", "SCA_median_effect", "SCA_perc_significant")) %>% 
+    mutate(Measure = as.character(Measure))
+  
+  # extract the specific results for each life satisfaction measure
+  tab_sca_spec <- data.frame(
+    Path = sapply(names_path, rep, 7) %>% as.vector(),
+    SCA_effects = object %>% 
+      group_by(Measure = lifesatisfaction) %>% 
+      {if(isTRUE(standardized)) {
+        dplyr::summarise(., median(cor1_std), median(b2_std), median(b3_std))} else {
+          dplyr::summarise(., median(cor1_est), median(b2_est), median(b3_est))
+        }} %>%
+      gather(key = "effect", value = "size", -Measure) %>% 
+      select(-effect),
+    SCA_perc_sig = object %>% 
+      group_by(Measure = lifesatisfaction) %>% 
+      dplyr::summarise(mean(as.numeric(cor1_sig)), mean(as.numeric(b2_sig)), mean(as.numeric(b3_sig))) %>% 
+      gather(key = "effect", value = "size", -Measure) %>% 
+      select(-effect)) %>% 
+    select(Path, Measure = SCA_effects.Measure, SCA_median_effect = SCA_effects.size, 
+           SCA_perc_significant = SCA_perc_sig.size, - SCA_perc_sig.Measure) %>% 
+    mutate(Measure = rename_lifesat(Measure)) 
+  
+  # merge tables
+  tab <- rbind(tab_sca_gen, tab_sca_spec) %>% 
+    left_join(tab_pref, by = c("Path", "Measure")) %>% 
+    arrange(Path) %>% 
+    mutate(SCA_perc_significant = round(SCA_perc_significant * 100, 0)) %>% 
+    # mutate_at(vars(preferred_spec_pvalue, preferred_spec_effect), funs(replace_na(., ""))) %>% 
+    mutate(Path = as.character(Path)) %>% 
+    set_colnames(c("Path", "Measure", "SCA: median effect", "SCA: % of specifications significant",
+                   "Preferred model: effect", "Preferred model: p-value"))
+  tab[c(2:8, 10:16, 18:24), "Path"] <- " "
+  
+  return(tab)
+}
+```
+
+### Specification: All participants
+
+The first table shows the results of the SCA for all specifications: including females, males and all gender specifications. The preferred model is for gender = "All" (the specifications that used both males and females).
+
+```{r show-table-1}
+results_table_1 <- make_table(results_frame, standardized = TRUE, gender = "Total")
+kable(results_table_1, caption = "Table 1: Results of SCAs (Standardised)")
+```
+
+### Specification: Females
+
+The second table shows the results of the SCA for females, with the preferred model using gender = female
+
+```{r show-table-2}
+results_table_2 <- make_table(results_frame, standardized = TRUE, gender = "Female")
+kable(results_table_2, caption = "Table 2: Results of SCAs for Females (Standardised)")
+```
+
+### Specification: Males
+
+The third table shows that results of the SCA for males, with the preferred model using gender = male. 
+
+```{r show-table-3}
+results_table_3 <- make_table(results_frame, standardized = TRUE, gender = "Male")
+kable(results_table_3, caption = "Table 3: Results of SCAs for Males (Standardised)")
+```
+
+# Unstandardized Solution
+
+We now examine the *unstandardised* path variables, which will allow us to compare in between genders.  
+
+### Specification: All participants
+The fourth table shows the results of the SCA for all specifications (male, female and all gender), but the preferred model is for the specification using gender = "all" (that means it used both male and female data)
+
+```{r show-table-4}
+results_table_4 <- make_table(results_frame, standardized = FALSE, gender = "Total")
+kable(results_table_4, caption = "Table 1: Results of SCAs (Unstandardised)")
+```
+
+### Specification: Females
+
+The fifth table shows the results of the SCA for females. The preferred model used female data.
+
+```{r show-table-5}
+results_table_5 <- make_table(results_frame, standardized = FALSE, gender = "Female")
+kable(results_table_5, caption = "Table 1: Results of SCAs (Unstandardised)")
+```
+
+### Specification: Males
+
+The sixth table shows that results of the SCA for males. The preferred model used male data. 
+
+```{r show-table-6}
+results_table_6 <- make_table(results_frame, standardized = FALSE, gender = "Male")
+kable(results_table_6, caption = "Table 1: Results of SCAs (Unstandardised)")
+```
+
+# Plots
+
+The SCA plots are difficult to examine at first, but once understood they include much information that allows for an in-depth understanding of the dataset and the effects it harbours. In this part of the code we will explain the plotting procedure and how to understand the plots in an in depth way. We will start with Figure 1, which is a combination of three regular SCA plots as seen in previous papers (Orben & Przybyslki 2019a, 2019b). The three panels show the three different paths calculated in the RI-CLPM:  
+
+1. The between-person correlations of social media use and life satisfaction, i.e. whether those adolescents who use more social media than others score differently on life satisfaction questionnaires  
+2. The within-person effect of social media use on life satisfaction, i.e. if an adolescent uses social media more than their _own average_ in wave x, will their life satisfaction be different in wave x+1  
+3. The within-person effect of life satisfaction on social media use, i.e. if an adolescent has higher life satisfaction than their _own average_ in wave x, with their use of social media change in wave x+1  
+
+For each of the three plots there are two sections: the top which shows the effects, and the bottom which we call the 'dashboard' and displays the effects of implementing the different specified analytical decisions (either all analytical decisions, or some that were chosen to be of particular interest). Each unique combination of analytical decisions (e.g. our preferred model is one of these combinations) is called a 'specification' and is a unique point on the x axis. The x axis of each plot is therefore as long as the number of specifications we include in the study (i.e. 2,268). The specifications are ranked so that the specification that produces the lowest effect size is on the left of the graph, while the specification that produces the highest effect size is on the right of the graph.    
+
+When just examining the top plot we see that each dot represents a different effect size found: The most left dot (the most negative effect size) and the most right dot (the most positive/ or least negative effect size). We can therefore examine the range of possible results that were found in doing the analysis in 2,268 different ways. The red dots show when the results of the analysis of that specific specification (unique combination of analytical decisions) was non significant (p value under 0.05) while the black dot show when an effect is statistically significant.
+
+
+The dashboard at the bottom of the graph shows us what analytical decision resulted in which result shown at the top of the graph. For each point on the x axis we can trace a vertical line up the graph to see what effect that analysis resulted in. In the process we can also read off what analytical decisions this specification consisted of in the dahsboard. For example, if we examine the full version of Figure 1, if on our vertical line there is a dot on the rows labelled "mean satisfaction", "4 waves", "all controls", "WLSMV" and "Females" we know that these were the decisions made for that model. By looking at the clustering of the dots in the different rows we can see whether for example analysing males vs females skews the effect sizes to be more positive or negative.    
+
+## Figure 1
+
+*Note*: We plot two versions of Figure 1. A version which only displays a few analytical decisions in the dashboard which is presented in the paper due to size restrictions and a full version which can be downloaded from the OSF. First we plot the top part of figure 1. These are not displayed but saved for later. We first however need to make an _index_ variable which tells us the rank of the specification, i.e. to order the different specifications for plotting. 
+```{r create-index}
+results_frame %<>% 
+  mutate(index_b2 = dense_rank(b2_std), 
+         index_b3 = dense_rank(b3_std), 
+         index_cor1 = dense_rank(cor1_std))
+```
+
+We then plot the top part of the figure for all three paths seperately. We do not create a function as the left plot needs to be slightly different from the rest (it includes axis labels, for example). These are the plots for the paper version of Figure 1:   
+```{r plot-function-SCA}
+plot_a_3 <- ggplot(results_frame, aes(x = index_cor1)) +
+    geom_point(aes(y = cor1_std, color = cor1_sig), alpha = 0.7, size = 0.001) +
+    scale_color_manual(values = c("#FF0000", "#000000")) +
+  scale_y_continuous(name = "Std. Coefficients", labels = scales::number_format(accuracy = 0.01)) +
+    theme(
+      legend.position = "none",
+      axis.text.x = element_blank(),
+      axis.title.x = element_blank(),
+      axis.ticks.x = element_blank(),
+      axis.line.x = element_blank(),
+      strip.background = element_rect(colour="white", fill="white"),
+     text = element_text(size = 9),
+    axis.line = element_line(colour = 'black', size = .3),
+    axis.ticks = element_line(colour = 'black', size = .3)
+    )
+
+plot_a_1 <- ggplot(results_frame, aes(x = index_b2)) +
+    geom_point(aes(y = b2_std, color = b2_sig), alpha = 0.7, size = 0.001) +
+    scale_color_manual(values = c("#FF0000", "#000000")) +
+    theme(
+      legend.position = "none",
+      axis.text.x = element_blank(),
+      axis.title.x = element_blank(),
+      axis.ticks.x = element_blank(),
+      axis.line.x = element_blank(),
+      axis.title.y = element_blank(),
+      strip.background = element_rect(colour="white", fill="white"),
+      text = element_text(size = 9),
+    axis.line = element_line(colour = 'black', size = .3),
+    axis.ticks = element_line(colour = 'black', size = .3)
+    )
+
+plot_a_2 <- ggplot(results_frame, aes(x = index_b3)) +
+    geom_point(aes(y = b3_std, color = b3_sig), alpha = 0.7, size = 0.001) +
+    scale_color_manual(values = c("#FF0000", "#000000")) +
+    theme(
+      legend.position = "none",
+      axis.text.x = element_blank(),
+      axis.title.x = element_blank(),
+      axis.ticks.x = element_blank(),
+      axis.line.x = element_blank(),
+      axis.title.y = element_blank(),
+      strip.background = element_rect(colour="white", fill="white"),
+      text = element_text(size = 9),
+    axis.line = element_line(colour = 'black', size = .3),
+    axis.ticks = element_line(colour = 'black', size = .3)
+    )
+```
+
+And these are the plots for the full version of Figure 1:  
+```{r plot-function-SCA-large}
+plot_a_3_l <- ggplot(results_frame, aes(x = index_cor1)) +
+    geom_point(aes(y = cor1_std, color = cor1_sig), alpha = 0.7, size = 0.1) +
+    scale_color_manual(values = c("#FF0000", "#000000")) +
+  scale_y_continuous(name = "Standardized Coefficients", labels = scales::number_format(accuracy = 0.01)) +
+    theme(
+      legend.position = "none",
+      axis.text.x = element_blank(),
+      axis.title.x = element_blank(),
+      axis.ticks.x = element_blank(),
+      axis.line.x = element_blank(),
+      strip.background = element_rect(colour="white", fill="white"),
+      strip.text.x = element_text(size = 12),
+      plot.title = element_text(size = 12)
+    ) +
+  ggtitle("1. Between-Person Correlation")
+
+plot_a_1_l <- ggplot(results_frame, aes(x = index_b2)) +
+    geom_point(aes(y = b2_std, color = b2_sig), alpha = 0.7, size = 0.1) +
+    scale_color_manual(values = c("#FF0000", "#000000")) +
+    theme(
+      legend.position = "none",
+      axis.text.x = element_blank(),
+      axis.title.x = element_blank(),
+      axis.ticks.x = element_blank(),
+      axis.line.x = element_blank(),
+      axis.title.y = element_blank(),
+      strip.background = element_rect(colour="white", fill="white"),
+      strip.text.x = element_text(size = 12),
+      plot.title = element_text(size = 12)
+    ) +
+  ggtitle("2. Predictor: Social Media Use")
+
+plot_a_2_l <- ggplot(results_frame, aes(x = index_b3)) +
+    geom_point(aes(y = b3_std, color = b3_sig), alpha = 0.7, size = 0.1) +
+    scale_color_manual(values = c("#FF0000", "#000000")) +
+    theme(
+      legend.position = "none",
+      axis.text.x = element_blank(),
+      axis.title.x = element_blank(),
+      axis.ticks.x = element_blank(),
+      axis.line.x = element_blank(),
+      axis.title.y = element_blank(),
+      strip.background = element_rect(colour="white", fill="white"),
+      strip.text.x = element_text(size = 12),
+      plot.title = element_text(size = 12)
+    ) +
+  ggtitle("3. Predictor: Life Satisfaction")
+```
+
+Now we also make the bottom bashboard for the different figures. For this we first need to create a data frame which allows us to plot which specification includes what analytical decisions and results in which analytical results (this part of the code is not the  best commented, sorry!). 
+```{r plot-scatterplot-function-SCA}
+
+# Fill results frame
+for(x in 1:3){
+  dot_data <-
+    as.data.frame(array(0, dim = c(nrow(results_frame), (length(variables)))))
+  
+  if(x == 1){
+    index <- "index_b2"
+    sig <- "b2_sig"
+    filter_value <- "b2"
+  } else if (x == 2){
+    index <- "index_b3" 
+    sig <- "b3_sig"
+    filter_value <- "b3"
+  } else if (x == 3){
+    index <- "index_cor1"
+    sig <- "cor1_sig"
+    filter_value <- "cor1"
+  }
+  
+  for (i in 1:nrow(results_frame)) {
+    factors_x <- as.character(results_frame[[i, "lifesatisfaction"]])
+    factors_w <- as.character(results_frame[[i, "wav"]])
+    factors_c <- as.character(results_frame[[i, "cont"]])
+    factors_e <- as.character(results_frame[[i, "estimator"]])
+    factors_i <- as.character(results_frame[[i, "imputation"]])
+    factors_g <- as.character(results_frame[[i, "gender"]])
+    for (l in 1:(length(variables))) {
+      if(length(factors_c) == 7){
+        if ((identical(factors_x, variables[l]) == TRUE) |
+          (identical(factors_w, variables[l]) == TRUE) |
+          (identical(factors_c, variables[l]) == TRUE) |
+          (identical(factors_e, variables[l]) == TRUE) |
+          (identical(factors_i, variables[l]) == TRUE) |
+          (identical(factors_g, variables[l]) == TRUE) == TRUE)  {
+        dot_data[i, l] <- results_frame[[i, index]]
+      } else {
+        dot_data[i, l] <- NA
+        dot_data[i, "V21"] <- results_frame[[i, index]]
+      }
+      } else {
+        if ((identical(factors_x, variables[l]) == TRUE) |
+          (identical(factors_w, variables[l]) == TRUE) |
+        (any(factors_c == variables[l]) == TRUE) |
+        (any(factors_e == variables[l]) == TRUE) |
+        (any(factors_i == variables[l]) == TRUE) |
+        (any(factors_g == variables[l]) == TRUE) == TRUE)  {
+        dot_data[i, l] <- results_frame[[i, index]]
+      } else {
+        dot_data[i, l] <- NA
+      }
+      }
+    }
+  }
+  
+  names(dot_data) <- c(names_wellbeing, names_wav, names_control, vars_estimator, vars_imputated, vars_gender)
+  
+  dot_data_long <-
+    gather(dot_data, vars, vars_score, 1:ncol(dot_data))
+  dot_data_long <- dot_data_long[complete.cases(dot_data_long),]
+  dot_data_long$grouping <- 1
+  
+  for (i in 1:nrow(dot_data_long)) {
+    axis_names <- c("Well-Being", "Waves", "Controls", "Estimator", "Imputation", "Gender")
+    dot_data_long[i, 3] <-
+      ifelse((any(dot_data_long[i, 1] == names_wellbeing) == TRUE), axis_names[1], 
+                    ifelse((any(dot_data_long[i,1] == names_wav) == TRUE), axis_names[2], 
+                           ifelse((any(dot_data_long[i,1] == vars_estimator) == TRUE), axis_names[4], 
+                                  ifelse((any(dot_data_long[i,1] == vars_imputated) == TRUE), axis_names[5],
+                                         ifelse((any(dot_data_long[i,1] == vars_gender) == TRUE), axis_names[6], axis_names[3])))))
+  }
+  
+  dd <- as.data.frame(colMeans(dot_data, na.rm = TRUE))
+  dd <- rownames_to_column(dd, var = "rowname")
+  names(dd) <- c("rowname", "mean")
+  dd$grouping <- 1
+  for (i in 1:nrow(dd)) {
+    dd[i, 3] <-
+      ifelse((any(dd[i, 1] == names_wellbeing) == TRUE), axis_names[1],
+                    ifelse((any(dd[i,1] == names_wav) == TRUE), axis_names[2], 
+                    ifelse((any(dd[i,1] == vars_estimator) == TRUE), axis_names[4], 
+                    ifelse((any(dd[i,1] == vars_imputated) == TRUE), axis_names[5],  
+                    ifelse((any(dd[i,1] == vars_gender) == TRUE), axis_names[6], axis_names[3])))))
+  }
+  dd <- dd %>% dplyr::arrange(mean) %>% dplyr::arrange(grouping)
+  
+  dot_data_long$grouping_or <-
+    factor(dot_data_long$grouping,
+           levels = axis_names,
+           ordered = TRUE)
+  dot_data_long$vars_or <-
+    factor(dot_data_long$vars,
+           ordered = TRUE,
+           levels = dd$rowname)
+  
+  index_data <- results_frame[, c(index, sig)]
+  colnames(index_data)[1] <- "vars_score"
+  dot_data_long <-
+    dplyr::left_join(dot_data_long, index_data, by = "vars_score")
+  
+  dot_data_long$path <- rep(filter_value, nrow(dot_data_long))
+  
+  dot_data_long %<>% mutate(vars_or = dplyr::recode(vars_or, 
+                                                    `Mean satisfaction` = "Mean",
+                                                    `Satisfaction family` = "Family",
+                                                    `Satisfaction life` = "Life",
+                                                    `Satisfaction school` = "School",
+                                                    `Satisfaction school work` = "School work",
+                                                    `Satisfaction appearance` = "Appearance",
+                                                    `Satisfaction friends` = "Friends"))
+    
+  assign(paste0("results_frame_", x), dot_data_long)
+}  
+```
+
+We then plot the three different plots, again in different functions as they are all slightly different. We first plot those that will go in the paper:    
+```{r function-for-plot-the-scatter}
+plot_scatter_left <- function(results_frame){
+  names(results_frame) <- c("vars", "vars_score", "grouping", "grouping_or", "vars_or", "sig", "path")
+  plot <-
+  ggplot(data = results_frame, aes(x = vars_or, y = vars_score, color = sig)) +
+  geom_point(size = 0.001, alpha = 0.7) +
+  scale_color_manual(values = c("#FF0000", "#000000")) +
+  coord_flip() +
+  facet_grid(grouping_or ~ path, scales = "free_y", space = "free_y") +
+  labs(x = "Analytical Choices", y = "") +
+  theme(
+    legend.position = "none",
+    strip.text.x = element_blank(),
+    strip.text.y = element_blank(),
+    strip.background = element_blank(),
+    text = element_text(size = 9),
+    axis.line = element_line(colour = 'black', size = .3),
+    axis.ticks = element_line(colour = 'black', size = .3))
+  
+  return(plot)
+}
+
+plot_scatter_middle <- function(results_frame){
+  names(results_frame) <- c("vars", "vars_score", "grouping", "grouping_or", "vars_or","sig", "path")
+  plot <-
+  ggplot(data = results_frame, aes(x = vars_or, y = vars_score, color = sig)) +
+  geom_point(size = 0.001, alpha = 0.7) +
+  scale_color_manual(values = c("#FF0000", "#000000")) +
+  coord_flip() +
+  facet_grid(grouping_or ~ path, scales = "free_y", space = "free_y") +
+  labs(y = "Ranked Analytical Options") +
+  theme(
+    legend.position = "none",
+    strip.text.x = element_blank(),
+    axis.title.y = element_blank(),
+    strip.text.y = element_blank(),
+    strip.background = element_blank(),
+    text = element_text(size = 9),
+    axis.line = element_line(colour = 'black', size = .3),
+    axis.ticks = element_line(colour = 'black', size = .3))
+  
+  return(plot)
+}
+
+plot_scatter_right <- function(results_frame){
+  names(results_frame) <- c("vars", "vars_score", "grouping", "grouping_or", "vars_or","sig", "path")
+  plot <-
+  ggplot(data = results_frame, aes(x = vars_or, y = vars_score, color = sig)) +
+  geom_point(size = 0.001, alpha = 0.7) +
+  scale_color_manual(values = c("#FF0000", "#000000")) +
+  coord_flip() +
+  facet_grid(grouping_or ~ path, scales = "free_y", space = "free_y") +
+  labs(x = "", y = "") +
+  theme(
+    legend.position = "none",
+    strip.text.x = element_blank(),
+    axis.title.y = element_blank(),
+    strip.text.y = element_blank(),
+    strip.background = element_blank(),
+    text = element_text(size = 9),
+    axis.line = element_line(colour = 'black', size = .3),
+    axis.ticks = element_line(colour = 'black', size = .3))
+  
+  return(plot)
+}
+```
+
+To do this, we filter out only the analytical decsiions of life satisfaction domain and gender which will be displayed in the paper's figure.  
+```{r plot-the-scatter}
+plot_b_1 <- plot_scatter_middle(results_frame_1 %>% filter(vars_or %in% c("Female", "All", "Male", "Mean", "Family", "Life", "School", "School work", "Appearance", "Friends")))
+plot_b_2 <- plot_scatter_right(results_frame_2 %>% filter(vars_or %in% c("Female", "All", "Male", "Mean", "Family", "Life", "School", "School work", "Appearance", "Friends")))
+plot_b_3 <- plot_scatter_left(results_frame_3 %>% filter(vars_or %in% c("Female", "All", "Male", "Mean", "Family", "Life", "School", "School work", "Appearance", "Friends")))
+```
+
+But we also plot the full version:  
+```{r function-for-plot-the-scatter-large}
+plot_scatter_left_l <- function(results_frame){
+  names(results_frame) <- c("vars", "vars_score", "grouping", "grouping_or", "vars_or", "sig", "path")
+  plot <-
+  ggplot(data = results_frame, aes(x = vars_or, y = vars_score, color = sig)) +
+  geom_point(size = 0.05, alpha = 0.7) +
+  scale_color_manual(values = c("#FF0000", "#000000")) +
+  coord_flip() +
+  facet_grid(grouping_or ~ path, scales = "free_y", space = "free_y") +
+  labs(y = "Analytical Options (Ranked)", x = "Analytical Choices") +
+  theme(
+    legend.position = "none",
+    strip.text.x = element_blank(),
+    strip.text.y = element_blank(),
+    strip.background = element_blank())
+  
+  return(plot)
+}
+
+plot_scatter_l <- function(results_frame){
+  names(results_frame) <- c("vars", "vars_score", "grouping", "grouping_or", "vars_or","sig", "path")
+  plot <-
+  ggplot(data = results_frame, aes(x = vars_or, y = vars_score, color = sig)) +
+  geom_point(size = 0.05, alpha = 0.7) +
+  scale_color_manual(values = c("#FF0000", "#000000")) +
+  coord_flip() +
+  facet_grid(grouping_or ~ path, scales = "free_y", space = "free_y") +
+  labs(y = "Analytical Options (Ranked)") +
+  theme(
+    legend.position = "none",
+    strip.text.x = element_blank(),
+    axis.title.y = element_blank(),
+    strip.text.y = element_blank(),
+    strip.background = element_blank())
+  
+  return(plot)
+}
+```
+
+```{r plot-the-scatter-large}
+plot_b_1_l <- plot_scatter_l(results_frame_1)
+plot_b_2_l <- plot_scatter_l(results_frame_2)
+plot_b_3_l <- plot_scatter_left_l(results_frame_3)
+```
+We join the two plots together using a script to ensure they are alligned and then we save them into the figures folder. 
+
+```{r join-plots}
+# Put curve and scatterplot together
+plot_both <- function(plot_a, plot_b){
+  plots <- list(plot_a, plot_b)
+  grobs <- list()
+  widths <- list()
+  
+
+  for (i in 1:length(plots)){
+    grobs[[i]] <- ggplotGrob(plots[[i]])
+    widths[[i]] <- grobs[[i]]$widths[2:5]
+  }
+  
+  maxwidth <- do.call(grid::unit.pmax, widths)
+  
+  for (i in 1:length(grobs)){
+    grobs[[i]]$widths[2:5] <- as.list(maxwidth)
+  }
+  
+  g <- do.call("grid.arrange", c(grobs, ncol = 1))
+  
+  g$heights <- list(unit(1,"null"), unit(1.5,"null"))
+  return(g)
+}
+```
+
+
+```{r save-plots, include=F}
+# Save
+g1 <- plot_both(plot_a_1, plot_b_1)
+g2 <- plot_both(plot_a_2, plot_b_2)
+g3 <- plot_both(plot_a_3, plot_b_3)
+```
+
+```{r save-plots-l, include=F}
+# Save
+g1_l <- plot_both(plot_a_1_l, plot_b_1_l)
+g2_l <- plot_both(plot_a_2_l, plot_b_2_l)
+g3_l <- plot_both(plot_a_3_l, plot_b_3_l)
+```
+Here we save the paper version which is 17.8x8cm:  
+```{r complete-plot}
+g4 <- grid.arrange(g3, g1, g2, ncol = 3)
+ggsave(file="../figures/figure_1.pdf", g4, width = 17.8, height = 7, units = "cm")
+```
+
+And we save the full version:  
+```{r complete-plot-large}
+g4_l <- grid.arrange(g3_l, g1_l, g2_l, ncol = 3)
+ggsave(file="../figures/figure_1_full.jpg", g4_l, width = 20, height = 10)
+```
+
+## Figure 2
+
+Our Figure 2 takes the SCA shown in Figure 1 and displays it differently to enable us to compare males and females. It is again split into three panels for the three different paths calculated in the RI-CLPM. Each panel consists of a graph made of two parts: Females at the top and Males at the bottom. The x-axis now represents the unstandardised coefficients found when examining the relationship of interest (between person correlation or within person effects) between social media use and a specific domain of life satisfaction. The specific domain of life satisfaction examined is shown on the y-axis.   
+
+The little colourful dots are the results of the SCA for that analysis. For example, in the top right corner the yellow dots represent the different results for a between person correlation between satisfaction with school work and social media use in females. There are multiple different results because we could have included different numbers of waves, different estimators or different combinations of control variables in our analysis.  
+
+The black or white dots show the result of the 'preferred model', i.e. the one specification we determined is the most robust and informed way of modelling the data. This model is described in detail at the beginning of the script. If the dot is black the model is statistically significant, if it is white it is not. We also show the confidence intervals for this specific model on the plot.   
+
+```{r make-jitter-plots, warning=F}
+data_fig <- results_frame %>% 
+  mutate(lifesatisfaction = rename_lifesat_short(lifesatisfaction)) %>% 
+  select(lifesatisfaction, gender, 
+         cor1_est, cor1_sig, b2_est, b2_sig, b3_est, b3_sig) %>% 
+  rename(`1` = cor1_est,
+         `2` = b2_est,
+         `3` = b3_est) %>% 
+  filter(gender != "All") %>% 
+  gather(key = "path", "value", -gender, -lifesatisfaction,
+         -c("cor1_sig", "b2_sig", "b3_sig"))
+
+
+data_fig_pref <- results_frame[pref_spec_no(results_frame, gender = c("Male", "Female")), ] %>% 
+  mutate(lifesatisfaction = rename_lifesat_short(lifesatisfaction)) %>% 
+  select(lifesatisfaction, gender, cor1_est, cor1_est_ll, cor1_est_ul, 
+         b2_est, b2_est_ll, b2_est_ul, b3_est, b3_est_ll, b3_est_ul, cor1_sig, b2_sig, b3_sig) %>% 
+  gather(key = "path", "value", -c("gender", "lifesatisfaction", 
+                                   "cor1_est_ll", "cor1_est_ul", 
+                                   "b2_est_ll", "b2_est_ul",
+                                   "b3_est_ll", "b3_est_ul", 
+                                   "cor1_sig", "b2_sig", "b3_sig")) %>% 
+  mutate(ll = ifelse(path == "cor1_est", cor1_est_ll, 
+                     ifelse(path == "b2_est", b2_est_ll, b3_est_ll)),
+         ul = ifelse(path == "cor1_est", cor1_est_ul, 
+                     ifelse(path == "b2_est", b2_est_ul, b3_est_ul)),
+         sig = ifelse(path == "cor1_est", cor1_sig, 
+                     ifelse(path == "b2_est", b2_sig, b3_sig))) %>% 
+  mutate(path = dplyr::recode(path, cor1_est = "1",
+                b2_est = "2",
+                b3_est = "3")) %>% 
+  select(-c("cor1_est_ll", "cor1_est_ul", "b2_est_ll", "b2_est_ul", "b3_est_ll", "b3_est_ul", "cor1_sig", "b2_sig", "b3_sig"))
+
+jitter_plot <-ggplot() +
+  coord_flip() +
+  geom_jitter(data = data_fig, 
+              aes(x = lifesatisfaction, y = value, colour = lifesatisfaction), 
+              shape = 16, alpha = 0.9, size = 0.4) +
+  scale_colour_manual(values = viridis(7, begin = 0.4, end = 1, direction = 1), guide = FALSE) +
+  geom_hline(yintercept = 0, size = .3) +
+  geom_pointrange(data = data_fig_pref,
+                  aes(x = lifesatisfaction, y = value, ymin=ll, ymax=ul, fill = sig),
+                  colour = "black", shape = 21, size = .3, stroke = 0.5) +
+  scale_fill_manual(values = c("white", "black")) +
+  scale_x_discrete(position = "top") +
+  facet_grid(gender ~ path) +
+  labs(x = "", y = "Unstandardized Coefficients") +
+  theme(
+    strip.background = element_blank(),
+    legend.position="none", 
+    text = element_text(size = 9),
+    strip.text.x = element_blank(),
+    axis.line = element_line(colour = 'black', size = .3),
+    axis.ticks = element_line(colour = 'black', size = .3))
+
+```
+
+This is the publication Figure 2 (12 x 7 cm):  
+```{r display pub fig 2}
+jitter_plot
+ggsave(file="../figures/figure_2.pdf", jitter_plot, width = 13, height = 7, units = "cm")
+```
+
+
+## Supplementary Number Plots
+
+We add these plots for those readers who want to examine visually the number of participants in each specification, as we encourage absolute transparency about the number of participants used in each scientific analysis. For this analysis we use the second (identical) version of the results frame we saved at the beginning of the script, we need to clean it a bit first.  
+```{r find-the-numbers-of-participants-in-each-specification-type}
+results_frame_n <- results_frame_sca %>% 
+  select(lifesatisfaction, variables, gender, wav, cont, estimator, imputation, n)
+
+results_frame_n$spec <- paste(results_frame_n$lifesatisfaction, 
+                              results_frame_n$variables, 
+                              results_frame_n$gender, 
+                              results_frame_n$wav, 
+                              results_frame_n$cont, 
+                              results_frame_n$estimator, 
+                              results_frame_n$imputation, sep = "_")
+
+results_frame_n <- results_frame_n %>% select(spec, n)
+```
+
+Once that is done we can create three plots showing the number of participants for each specification and save them in the figures folder for inspection.  
+```{r plot-n-graphs}
+results_frame$spec <- paste(results_frame$lifesatisfaction, 
+                            results_frame$variables, 
+                            results_frame$gender,
+                            results_frame$wav, 
+                            results_frame$cont, 
+                            results_frame$estimator, 
+                            results_frame$imputation, 
+                            sep = "_")
+
+results_frame_number <- left_join(results_frame, results_frame_n, by = "spec")
+
+plot_n_cor1 <- ggplot(results_frame_number, aes(x = index_cor1)) +
+  geom_point(aes(y = n, color = as.factor(cor1_sig)), size = 0.5) +
+    scale_color_manual(values = c("#FF0000", "#000000")) +
+    labs(y = "Number of Participants", x = "Analytical Choices") +
+    theme(
+      legend.position = "none",
+      strip.background = element_rect(colour="white", fill="white")
+    )
+plot_n_b2 <- ggplot(results_frame_number, aes(x = index_b2)) +
+  geom_point(aes(y = n, color = as.factor(b2_sig)), size = 0.5) +
+    scale_color_manual(values = c("#FF0000", "#000000")) +
+    labs(y = "Number of Participants", x = "Analytical Choices") +
+    theme(
+      legend.position = "none",
+      strip.background = element_rect(colour="white", fill="white")
+    )
+plot_n_b3 <- ggplot(results_frame_number, aes(x = index_b3)) +
+  geom_point(aes(y = n, color = as.factor(b3_sig)), size = 0.5) +
+    scale_color_manual(values = c("#FF0000", "#000000")) +
+    labs(y = "Number of Participants", x = "Analytical Choices") +
+    theme(
+      legend.position = "none",
+      strip.background = element_rect(colour="white", fill="white")
+    )
+
+ggsave(file="../figures/sca_n_cor1.jpg", plot_n_cor1, width = 10, height = 5)
+ggsave(file="../figures/sca_n_b2.jpg", plot_n_b2, width = 10, height = 5)
+ggsave(file="../figures/sca_n_b3.jpg", plot_n_b3, width = 10, height = 5)
+```
